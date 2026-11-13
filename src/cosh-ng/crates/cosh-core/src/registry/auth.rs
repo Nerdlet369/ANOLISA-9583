@@ -131,11 +131,7 @@ pub(super) async fn handle_auth(
                         "source": source,
                         "editable": editable,
                         "auth_source": provider.auth_source,
-                        "model": if provider.is_ecs_identity() {
-                            Some(crate::auth::trial_policy::MODEL)
-                        } else {
-                            provider.model.as_deref()
-                        },
+                        "model": provider.model,
                         "base_url": provider.base_url,
                         "api_key_len": provider.api_key.as_ref().map(|v| v.chars().count()).unwrap_or(0),
                         "access_key_id_len": provider.access_key_id.as_ref().map(|v| v.chars().count()).unwrap_or(0),

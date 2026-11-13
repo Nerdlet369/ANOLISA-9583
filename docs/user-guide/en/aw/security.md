@@ -24,7 +24,7 @@ backend. Root daemons must run from root-controlled backend installations.
 After [installing the AW CLI](installation.md), add the Provider bridge:
 
 ```bash
-export AW_VERSION=0.1.1
+export AW_VERSION=0.1.0
 export AW_SEC_BUNDLE="aw-provider-sec-core-$AW_VERSION-linux-$(uname -m)"
 tar -xzf "$AW_SEC_BUNDLE.tar.gz"
 export AW_EXTENSION_PREFIX="$HOME/.local/lib/aw/extensions"
@@ -61,10 +61,7 @@ For native or Makefile installations, set `PROVIDERS_DIR` to the actual installe
 Provider root, such as `/usr/libexec/aw/providers` or `/usr/local/libexec/aw/providers`. For compression too, install
 the Tokenless backend and bridge, then select `sec-core-tokenless.json` with the
 three additional backend values described in [Tokenless](tokenless.md).
-For OpenClaw alone, select `sec-core-tokenless-openclaw.json` and use its
-[launch arguments](configuration.md#openclaw). For a shared Qoder/OpenClaw
-configuration, select `sec-core-tokenless.json`; it scans both Shell tools
-while retaining each Agent's [Tokenless behavior](configuration.md#choose-capabilities).
+OpenClaw uses its [corresponding launch arguments](configuration.md#openclaw).
 
 A Provider delivered by RPM or another owner can instead be referenced directly
 in YAML through its absolute `transport.argv`.

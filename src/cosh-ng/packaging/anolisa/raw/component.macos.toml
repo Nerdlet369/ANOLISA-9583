@@ -1,6 +1,6 @@
 [component]
 name = "cosh-ng"
-version = "0.29.1"
+version = "0.29.0"
 layer = "runtime"
 domain = "tools"
 display_name = "cosh-ng"
@@ -38,6 +38,12 @@ type = "executable"
 [[component.layout.files]]
 source = "bin/cosh"
 target = "{bindir}/cosh"
+mode = "0755"
+type = "executable"
+
+[[component.layout.files]]
+source = "bin/cosh-switch"
+target = "{bindir}/cosh-switch"
 mode = "0755"
 type = "executable"
 

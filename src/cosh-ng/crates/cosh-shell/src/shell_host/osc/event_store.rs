@@ -178,19 +178,7 @@ impl OscParser {
         F: FnMut(ShellEventView<'_>, &mut W) -> io::Result<T>,
     {
         self.events.persist_pending()?;
-        let prompt =
-            if !self.has_active_foreground_command() && self.has_prompt_painted_since_ready() {
-                self.prompt_epoch_exchange
-                    .as_ref()
-                    .zip(self.prompt_epoch)
-                    .and_then(|(exchange, epoch)| exchange.ready_snapshot(epoch))
-            } else {
-                None
-            };
-        let result = observer(
-            self.events.view().with_prompt_snapshot(prompt.as_ref()),
-            output,
-        )?;
+        let result = observer(self.events.view(), output)?;
         let observed = self.events.position();
         self.events.compact_observed(observed);
         Ok(result)

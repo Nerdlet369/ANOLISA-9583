@@ -24,7 +24,7 @@ use super::filewrite::{FileWrite as FileWriteProbe, RawFileWriteEvent};
 use super::procmon::{ProcMon, ProcMonEvent};
 use super::proctrace::{ProcEventHeader, ProcTrace, VariableEvent};
 use super::shared_maps::SharedMaps;
-use super::sslsniff::{IdentityStatus, SslAdmission, SslSniff};
+use super::sslsniff::SslSniff;
 use super::tcpsniff::TcpSniff;
 use super::udpdns::{RawUdpDnsEvent, UdpDns};
 use crate::config::TcpTarget;
@@ -126,31 +126,6 @@ impl Probes {
     /// `add_traced_cgroup`. When false (default), every probe behaves exactly
     /// like before this feature existed.
     pub fn new_with_cgroup_filter(
-        target_pids: &[u32],
-        target_uid: Option<u32>,
-        enable_filewatch: bool,
-        enable_udpdns: bool,
-        tcp_targets: &[TcpTarget],
-        cgroup_filter_enabled: bool,
-        runtime_limits: &RuntimeLimits,
-    ) -> Result<Self> {
-        let memlock = super::raise_memlock_limit();
-        Self::create(
-            target_pids,
-            target_uid,
-            enable_filewatch,
-            enable_udpdns,
-            tcp_targets,
-            cgroup_filter_enabled,
-            runtime_limits,
-        )
-        .map_err(|err| match memlock {
-            Some(limit) => err.context(super::memlock_hint(limit)),
-            None => err,
-        })
-    }
-
-    fn create(
         target_pids: &[u32],
         target_uid: Option<u32>,
         enable_filewatch: bool,
@@ -310,74 +285,42 @@ impl Probes {
     ///
     /// uprobe 已关联但 PID 无法注册时返回错误；无可用探针属于正常跳过。
     pub fn attach_unclassified_process(&mut self, pid: i32) -> Result<()> {
-        let admission = match self.sslsniff.attach_observed_process(pid, true) {
-            Ok(admission) => admission,
-            Err(error) => {
-                log::debug!(
-                    "[attach_unclassified_process] pid={pid}: no SSL attach ({error:#}); leaving the traced_processes slot free"
-                );
-                return Ok(());
-            }
-        };
-        if let Some(admission) = admission {
-            self.admit_ssl_process(admission)?;
-        } else if self.sslsniff.pid_has_pending_scan(pid as u32) {
-            self.sslsniff.defer_pid_admission(pid as u32);
+        if let Err(e) = self.attach_ssl_to_process(pid) {
+            log::debug!(
+                "[attach_unclassified_process] pid={pid}: no SSL attach ({e:#}); leaving the traced_processes slot free"
+            );
+            return Ok(());
         }
-        Ok(())
+        if !self.sslsniff.has_process_attachments(pid as u32) {
+            // A queued scan has no attachment yet. Retain the pid so the
+            // completion path can claim a filter slot once the uprobes are
+            // actually installed.
+            if self.sslsniff.pid_has_pending_scan(pid as u32) {
+                self.sslsniff.defer_pid_admission(pid as u32);
+            }
+            return Ok(());
+        }
+        self.add_traced_pid(pid as u32)
     }
 
     /// Attach SSL probes to a specific process
     pub fn attach_ssl_to_process(&mut self, pid: i32) -> Result<()> {
         self.sslsniff
-            .attach_observed_process(pid, false)
-            .context("failed to attach sslsniff to process")
-            .map(|_| ())
-    }
-
-    /// Complete deferred scans and late SSL retries without blocking event consumption.
-    pub fn poll_pending_ssl(&mut self) {
-        let mut admitted = self.sslsniff.poll_pending_scan_admissions();
-        admitted.extend(self.sslsniff.poll_late_retries());
-        admitted.sort_by_key(|admission| admission.pid());
-        admitted.dedup();
-        for admission in admitted {
-            let _ = self.admit_ssl_process(admission);
-        }
-    }
-
-    fn admit_ssl_process(&mut self, admission: SslAdmission) -> Result<()> {
-        let pid = admission.pid();
-        match admission.status() {
-            IdentityStatus::Stale => {
-                self.sslsniff.detach_stale_admission(admission);
-                return Ok(());
-            }
-            IdentityStatus::Unavailable => {
-                self.sslsniff.retry_admission(admission);
-                return Ok(());
-            }
-            IdentityStatus::Current => {}
-        }
-        if let Err(error) = self.add_traced_pid(pid) {
-            log::error!("failed to register pid {pid} after deferred SSL attach: {error:#}");
-            if !self.sslsniff.retry_admission(admission) {
-                log::debug!("SSL admission retry budget exhausted for pid {pid}");
-            }
-            return Err(error);
-        }
-        match admission.status() {
-            IdentityStatus::Stale => {
-                if let Err(error) = self.remove_traced_pid(pid) {
-                    log::warn!("failed to remove stale SSL registration for pid {pid}: {error:#}");
-                }
-                self.sslsniff.detach_stale_admission(admission);
-            }
-            IdentityStatus::Current | IdentityStatus::Unavailable => {
-                self.sslsniff.complete_admission(admission);
-            }
-        }
+            .attach_process(pid)
+            .context("failed to attach sslsniff to process")?;
         Ok(())
+    }
+
+    /// Complete deferred SSL scans without blocking event consumption.
+    pub(crate) fn poll_pending_ssl(&mut self) {
+        for pid in self.sslsniff.poll_pending_scans() {
+            // The completion path only returns pids it observed alive while
+            // holding the pending admission. Registration can still race with
+            // exit; the filter reaper handles that residual case.
+            if let Err(error) = self.add_traced_pid(pid) {
+                log::error!("failed to register pid {pid} after deferred SSL attach: {error:#}");
+            }
+        }
     }
 
     /// Share CPU admission with the bounded executable scan worker.

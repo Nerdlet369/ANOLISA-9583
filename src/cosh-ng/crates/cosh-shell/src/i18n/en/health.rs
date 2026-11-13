@@ -9,7 +9,7 @@ pub(super) fn message(id: MessageId) -> Option<&'static str> {
         MessageId::HealthBannerEvidenceLabel => "Evidence",
         MessageId::HealthBannerMoreFindingsLabel => "{count} more finding(s)",
         MessageId::HealthBannerUnavailableLabel => "Unavailable",
-        MessageId::HealthBannerFindingsSection => "Needs attention",
+        MessageId::HealthBannerFindingsSection => "Findings",
         MessageId::HealthBannerSuggestedPromptSection => "Suggested Prompts",
         MessageId::HealthBannerSuggestedPromptIntro => "You can type these prompts to the agent:",
         MessageId::HealthSeverityOk => "ok",
@@ -25,7 +25,6 @@ pub(super) fn message(id: MessageId) -> Option<&'static str> {
         MessageId::HealthMetricCpuPerCoreUnit => "x",
         MessageId::HealthMetricCpuUsed => "CPU used",
         MessageId::HealthMetricHost => "Host",
-        MessageId::HealthMetricUsed => "used",
         MessageId::HealthMetricMemory => "Memory",
         MessageId::HealthMetricMemoryAvailable => "Mem avail",
         MessageId::HealthMetricMemoryUsed => "Mem used",
@@ -56,48 +55,48 @@ pub(super) fn message(id: MessageId) -> Option<&'static str> {
         MessageId::HealthTryCheckSwapPressure => "check active swap pressure",
         MessageId::HealthTryCheckRecentOom => "analyze latest OOM cause",
         MessageId::HealthTryInspectDiskUsage => "inspect disk usage",
-        MessageId::HealthTryInspectServiceStatus => "inspect {service} status",
+        MessageId::HealthTryInspectServiceStatus => "inspect service status",
         MessageId::HealthTryInspectHighLoad => "inspect high load",
         MessageId::HealthTryInspectProcessMemory => "inspect {process} memory",
         MessageId::HealthTryReviewUnavailableChecks => "review unavailable checks",
         MessageId::HealthPromptAnalyzeMemoryPressure => {
-            "Check memory pressure, top consumers and cgroup limits; suggest next steps."
+            "Analyze memory pressure and identify top consumers that may affect this shell."
         }
         MessageId::HealthPromptCheckSwapPressure => {
-            "Check whether swap pressure is active, available memory and related processes."
+            "Check whether swap pressure is active and which processes are driving it."
         }
         MessageId::HealthPromptCheckRecentOom => {
-            "Check recent OOM timing, scope, affected processes and memory limits."
+            "Help me analyze the cause of the most recent OOM, focusing on the killed process, cgroup, and memory state around the event."
         }
         MessageId::HealthPromptInspectDiskUsage => {
-            "Check current disk usage and major consumers; suggest next steps."
+            "Inspect the risky mount and suggest safe disk cleanup targets."
         }
         MessageId::HealthPromptInspectServiceStatus => {
-            "Verify the current state of service {service} first, then investigate likely causes and suggest next steps."
+            "Inspect the configured service state and likely failure cause."
         }
         MessageId::HealthPromptInspectHighLoad => {
-            "Check load; distinguish CPU work, I/O waits and other causes."
+            "Analyze high load and identify CPU or IO pressure sources."
         }
         MessageId::HealthPromptInspectProcessMemory => {
-            "Check recent OOM impact on {process}, event timing and memory limits."
+            "Help me analyze why the latest OOM killed {process}, focusing on cgroup scope and memory limits."
         }
         MessageId::HealthPromptReviewUnavailableChecks => {
             "Explain why startup health checks were unavailable and how to restore them."
         }
         MessageId::HealthInsightMemoryAvailableLow => {
-            "available memory is low"
+            "available memory is low; this can slow commands or make new processes fail"
         }
         MessageId::HealthInsightDiskHigh => {
-            "disk usage is high on this mount"
+            "disk usage is high on the riskiest mount; writes or builds may fail soon"
         }
         MessageId::HealthInsightRecentOom => {
-            "Recent OOM event"
+            "the latest OOM has already happened; review the killed process, cgroup, and memory state around the event"
         }
         MessageId::HealthInsightCpuLoadHigh => {
-            "load stayed high across recent windows"
+            "load stayed high across recent windows; commands may be delayed"
         }
         MessageId::HealthInsightSwapPressure => {
-            "swap usage is high"
+            "swap usage is high with memory pressure context; paging can slow command response"
         }
         MessageId::HealthInsightServiceState => {
             "service unit {service} observed {observed}, expected {expected}"

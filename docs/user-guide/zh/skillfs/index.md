@@ -255,11 +255,6 @@ skillfs validate /path/to/skills --format json
 进入状态汇总并返回非 0 exit code；仅 degraded 的 skill 会被报告，但 exit code 仍为
 0。
 
-`SKILL.md` 中的 `## Parameters` 和 `## Returns` 标题允许带可选的闭合 `#`
-序列，例如 `## Parameters ##` 或 `## Returns #`。闭合序列与标题文字之间须有
-空格或 Tab，序列之后也只允许空格或 Tab。这些标题下的契约条目会正常解析，
-格式错误的 bullet 会产生 warning，并使状态变为 `degraded`。
-
 JSON 输出中，error 和 warning entry 都包含 `path` 字段，方便调用方定位具体出错的
 skill 文件。
 
@@ -357,17 +352,6 @@ uv 可用时，启发式归一化保留 `pip install --user` 和 `pip3 install -
 命令、列表或散文中的行内代码，以及后接括号说明的命令。每个行内代码片段单独
 检查。指定解释器的 `python -m pip` 调用保持不变。未结束的参数、续行和命令
 替换也会保留原始 pip 调用。
-
-挂载启动时的环境快照中存在 `PIP_USER`，或同一行调用前的文本引用了该变量时，
-也会保留 pip，包括 `PIP_USER=1 pip install requests` 和
-`export PIP_USER=1; pip install requests`。此检查采用保守策略：空值、假值、
-覆盖赋值或 `unset` 后仍保留 pip，不求解 shell 状态。更改挂载进程的环境后需重新
-挂载；文档前面行中的赋值不在此检查范围内。
-
-已知 pip 专属选项 `--root`、`--report`、`--platform`、`--implementation`、
-`--abi` 和 `--upgrade-strategy` 也会保留 pip，同时支持 `--option value` 和
-`--option=value` 写法。例如，`pip install --root=/tmp/rootz requests` 保持不变。
-这些选项按每次调用的参数范围检查，相邻命令中的普通安装仍可使用 uv。
 
 启发式归一化选择 Yarn 时，仅把不带参数的 `npm install` 改写成 `yarn install`。
 带包名、选项或重定向的安装命令保持原样：Yarn 使用 `add` 添加依赖，并不支持所有 npm

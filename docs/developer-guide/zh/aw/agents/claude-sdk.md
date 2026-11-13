@@ -105,46 +105,6 @@ PostTool 只替换完成、非图片且未中断的 Bash stdout。完成观察�
 固定版本原生测试由[贡献指南](../../../../../src/aw/CONTRIBUTING_zh.md)统一运行。
 常驻客户端与受管 MCP 见[常驻部署](../deployment/resident.md)。
 
-## 原生启动与空闲策略更新
-
-原生 Python 宿主可以在创建受管 SDK 客户端前准备 AW。
-工作目录内的 `aw.yaml` 用 `claude` 目标指定 Python 环境与 worker 脚本。
-一次性加入下面的启动代码并重启。应用模块沿用 `aw_claude.create_client` 工厂，
-负责关闭每个客户端。以 `setsid python native_host.py` 启动独立宿主；SDK 取消无法
-确认时，AW 会终止该宿主进程组。
-
-```python
-import asyncio
-import json
-import os
-import subprocess
-import sys
-
-prepared = json.loads(subprocess.check_output(
-    ["aw", "instance", "prepare", "--agent", "claude"], text=True))
-os.environ.update(prepared["environment"])
-sys.path[:0] = prepared["environment"]["PYTHONPATH"].split(os.pathsep)
-
-from aw_resident import prepare_native
-
-async def main():
-    await prepare_native()
-    from application import run_worker
-    await run_worker()
-
-try:
-    asyncio.run(main())
-finally:
-    subprocess.run(["aw", "instance", "release", "--binding", prepared["binding"]],
-                   check=True)
-```
-
-Ready 后执行 `aw instance update --agent claude`，会加载同一份默认
-`aw.yaml`。已连接客户端在整个会话中保留自己的策略；更新要求全部客户端断开并
-完成清理。新客户端在连接 SDK 前获取并安装当前路由，包括原生回调组合与受管
-MCP 检查。准备和销毁期间均保留准入占用，更新无法越过这些边界。
-没有独立进程组的宿主会在 Ready 前被拒绝。
-
 ## 提交前检查用户文本
 
 使用 [Claude 提交配置](../../../../../src/aw/crates/aw-service/examples/aw.claude-submission.yaml)
@@ -182,12 +142,3 @@ Hook，保留已有 Hook、原生拒绝和设置。这些 Hook 添加的上下�
 常驻客户端每次检查确认关闭后回收输入记录，保留递增序号拒绝重放，可以在同一客户端
 继续超过 1,024 次提交。前台 binding 与旧工具事件共用累计 1,024 条关联容量，
 应在达到上限前创建新 binding。每次检查后均释放活动输入事件及扫描调用。
-
-
-## 任务观测
-
-启用 `evidence` 后，每个已确认的托管 Session 独立持有有界观测任务。已配置的原生 Hook
-调用产生回调元数据；Session 关闭时等待在途读取结束并释放来源会话声明。证据查询失败不会
-阻断已准入的工具调用。Pi 和 Claude SDK 沿用现有来源身份范围：回调关联保持 `unverified`，
-覆盖保持 `unknown`，AW 不宣称 AgentSight 历史属于该 SDK Session。这两个 Adapter 的空工具
-策略不会额外安装合成观测回调。

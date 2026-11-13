@@ -48,8 +48,7 @@
     "aw-provider-sec-core/test/coverage",
     "aw-host/test/tool_matching",
     "aw-provider-sec-core/test/pii",
-    "aw-provider-sec-core/test/pii_transport",
-    "aw-cli/test/native_setup"
+    "aw-provider-sec-core/test/pii_transport"
   ],
   "cases": {
     "package-doctor-files": {
@@ -446,15 +445,15 @@
     },
     "sdk-scope-observation-root": {
       "target": "aw-cli/test/evidence",
-      "test": "scopes::owned_roots_keep_their_run_metadata_while_tasks_observe_independently"
+      "test": "scopes::owned_roots_allow_observation_and_reject_task_admission"
     },
     "sdk-scope-observation-child": {
       "target": "aw-cli/test/evidence",
-      "test": "scopes::preparing_scopes_are_closed_to_observation_until_acknowledgement"
+      "test": "scopes::preparing_and_active_task_scopes_exclude_observation"
     },
     "pi-resident-observation": {
       "target": "aw-cli/test/pi",
-      "test": "resident_observation_retains_unknown_coverage_without_source_identity"
+      "test": "resident_observation_is_rejected_before_ready_but_off_is_allowed"
     },
     "pi-legacy-observation": {
       "target": "aw-cli/test/pi",
@@ -690,7 +689,7 @@
     },
     "qwenpaw-resident-observation": {
       "target": "aw-cli/test/qwenpaw",
-      "test": "resident::resident_callbacks_keep_verified_observation_until_scope_cleanup"
+      "test": "resident_observation_is_rejected_before_launch"
     },
     "qwenpaw-managed-association": {
       "target": "aw-adapter/lib/aw_adapter",
@@ -1071,142 +1070,6 @@
     "pi-skill-manifest-binding": {
       "target": "aw-provider-sec-core/test/skill",
       "test": "pi_snapshot_requires_the_exact_manifest_authenticated_by_the_existing_cli"
-    },
-    "native-setup-python": {
-      "target": "aw-cli/test/native_setup",
-      "test": "python_setup_is_explicit_private_and_preserves_existing_startup"
-    },
-    "native-setup-node": {
-      "target": "aw-cli/test/native_setup",
-      "test": "node_setup_quotes_preload_paths_and_keeps_native_settings"
-    },
-    "qoder-instance-input": {
-      "target": "aw-cli/test/launcher",
-      "test": "runtime_policy::instance::qoder_native_input_policy_updates_before_model_dispatch"
-    },
-    "qoder-sdk-native-instance": {
-      "target": "aw-cli/test/qoder_sdk",
-      "test": "resident_reload::native_application_adopts_resident_policy_without_aw_run"
-    },
-    "pi-native-instance": {
-      "target": "aw-cli/test/pi",
-      "test": "native_update::native_worker_updates_only_between_closed_sessions"
-    },
-    "pi-native-strict-admission": {
-      "target": "aw-cli/test/pi",
-      "test": "native_update::native_worker_rejects_strict_update_for_unverified_package_pairs"
-    },
-    "openclaw-native-instance": {
-      "target": "aw-cli/test/openclaw",
-      "test": "native_update::native_gateway_updates_between_confirmed_runs"
-    },
-    "hermes-native-startup": {
-      "target": "aw-cli/test/launcher",
-      "test": "hermes_trust::hermes_native_startup_precedes_dispatch"
-    },
-    "sdk-scope-observation-isolation": {
-      "target": "aw-cli/test/evidence",
-      "test": "scopes::parallel_task_observations_do_not_share_source_sessions_and_release_claims"
-    },
-    "sdk-scope-observation-owner-exit": {
-      "target": "aw-cli/test/evidence",
-      "test": "scopes::worker_exit_drains_task_observation_and_reclaims_its_scope"
-    },
-    "qoder-instance-input-timeout": {
-      "target": "aw-cli/test/launcher",
-      "test": "runtime_policy::instance::qoder_native_submission_outlives_lifecycle_timeout_and_drains_denial"
-    },
-    "hermes-native-veto": {
-      "target": "aw-adapter/lib/aw_adapter",
-      "test": "reload::tests::hermes_native_json_veto_survives_later_approval"
-    },
-    "hermes-native-input-success": {
-      "target": "aw-adapter/lib/aw_adapter",
-      "test": "reload::tests::hermes_success_keeps_the_submission_json_envelope"
-    },
-    "hermes-native-skill-policy": {
-      "target": "aw-adapter/lib/aw_adapter",
-      "test": "reload::tests::hermes_skill_plan_selects_only_matching_checks_and_preserves_budget"
-    },
-    "sdk-scope-observation-failure": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::scopes::tests::observation::observation_start_failure_cancels_acknowledged_scope_and_drains_resources"
-    },
-    "qoder-native-start": {
-      "target": "aw-cli/test/launcher",
-      "test": "qoder_bootstrap::native_print_startup_updates_and_releases_without_aw_run"
-    },
-    "qoder-native-start-isolation": {
-      "target": "aw-cli/test/launcher",
-      "test": "qoder_bootstrap::shared_profile_owners_reject_missing_stale_and_cross_owner_locators"
-    },
-    "qoder-native-start-recovery": {
-      "target": "aw-cli/lib/aw_cli",
-      "test": "cli::qoder_bootstrap::tests::interrupted_publication_reclaims_only_private_claims_of_exited_owners"
-    },
-    "qwenpaw-startup-readiness": {
-      "target": "aw-cli/test/qwenpaw",
-      "test": "native_startup_fences_requests_until_plugin_ready"
-    },
-    "qoder-sdk-native-direct-ready": {
-      "target": "aw-cli/test/qoder_sdk",
-      "test": "resident_reload::native_direct_query_and_prewarm_confirm_root_readiness_and_cleanup"
-    },
-    "openclaw-native-retry": {
-      "target": "aw-cli/test/openclaw",
-      "test": "native_update::native_gateway_keeps_tokenless_retry_arguments_and_rechecks_fresh_calls"
-    },
-    "pi-native-arguments": {
-      "target": "aw-cli/test/pi",
-      "test": "native_update::native_entrypoints_preserve_configured_application_arguments"
-    },
-    "native-event-admission": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::registration::tests::native::direct_native_events_require_process_bridge_and_active_request"
-    },
-    "native-event-generation": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::registration::tests::native::native_event_keeps_its_exact_reservation_while_parallel_runs_continue"
-    },
-    "native-event-final-admission": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::registration::tests::native::native_invocation_rechecks_reservation_after_durable_started_audit"
-    },
-    "native-release-update-race": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::registration::tests::native::native_release_during_activation_audit_prevents_commit"
-    },
-    "native-owner-update-race": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::registration::tests::native::native_owner_exit_during_activation_audit_keeps_previous_policy"
-    },
-    "openclaw-native-startup-contract": {
-      "target": "aw-cli/test/openclaw",
-      "test": "native_update::native_gateway_checks_launch_identity_and_completed_run_replay"
-    },
-    "qoder-sdk-callback-deadline": {
-      "target": "aw-cli/test/qoder_sdk",
-      "test": "callback_deadlines_preserve_late_denials_and_cleanup_diagnostics"
-    },
-    "service-expired-failure-actions": {
-      "target": "aw-cli/test/service",
-      "test": "expired::expired_events_preserve_event_and_default_budget_failure_actions"
-    },
-    "service-expired-capacity": {
-      "target": "aw-cli/test/service",
-      "test": "expired::expired_handles_are_bounded_instance_scoped_and_reclaimed_by_close_or_unbind"
-    },
-    "service-expired-native-cleanup": {
-      "target": "aw-cli/test/service",
-      "test": "expired::expired_native_results_and_correlated_close_release_retained_capacity"
-    },
-    "service-expired-handoff": {
-      "target": "aw-service/lib/aw_service",
-      "test": "runtime::expired::tests::queued_requests_survive_expiry_retirement"
-    },
-    "input-rewrite": {
-      "target": "aw-cli/test/pretool",
-      "test": "input_rewrite::same_call_rewrite_is_checked_before_native_adoption_for_supported_adapters"
     }
   },
   "agents": {
@@ -1218,9 +1081,6 @@
           ],
           "block": [
             "security-retry"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1250,24 +1110,15 @@
         "agentscope-lifecycle",
         "cancel-initialization",
         "scope-native-skips",
-        "submit-agentscope",
-        "sdk-scope-observation-isolation",
-        "sdk-scope-observation-owner-exit",
-        "sdk-scope-observation-failure",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "submit-agentscope"
       ],
       "security": [
         "security-retry",
         "scope-native-skips",
-        "coverage-native-identity",
-        "input-rewrite"
+        "coverage-native-identity"
       ],
       "tokenless": [
-        "final-replacement",
-        "input-rewrite"
+        "final-replacement"
       ]
     },
     "claude-sdk": {
@@ -1280,9 +1131,6 @@
           "block": [
             "security-retry",
             "claude-managed-mcp-ownership"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1336,27 +1184,18 @@
         "python-scope-validity",
         "claude-native-configuration",
         "claude-native-model-settings",
-        "claude-submission-cleanup",
-        "sdk-scope-observation-isolation",
-        "sdk-scope-observation-owner-exit",
-        "sdk-scope-observation-failure",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "claude-submission-cleanup"
       ],
       "security": [
         "security-retry",
         "scope-native-skips",
         "coverage-native-identity",
-        "claude-submission",
-        "input-rewrite"
+        "claude-submission"
       ],
       "tokenless": [
         "final-replacement",
         "claude-managed-mcp",
-        "scope-sdk-result",
-        "input-rewrite"
+        "scope-sdk-result"
       ]
     },
     "hermes": {
@@ -1367,9 +1206,6 @@
           ],
           "block": [
             "security-retry"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1392,31 +1228,15 @@
       "lifecycle": [
         "hermes-lifecycle",
         "cancel-initialization",
-        "scope-native-skips",
-        "native-setup-python",
-        "hermes-native-startup",
-        "native-event-admission",
-        "native-event-generation",
-        "native-event-final-admission",
-        "native-release-update-race",
-        "native-owner-update-race",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "scope-native-skips"
       ],
       "security": [
         "security-retry",
         "scope-native-skips",
-        "coverage-native-identity",
-        "hermes-native-veto",
-        "hermes-native-input-success",
-        "hermes-native-skill-policy",
-        "input-rewrite"
+        "coverage-native-identity"
       ],
       "tokenless": [
-        "final-replacement",
-        "input-rewrite"
+        "final-replacement"
       ]
     },
     "openclaw": {
@@ -1441,20 +1261,7 @@
       "lifecycle": [
         "openclaw-lifecycle",
         "cancel-initialization",
-        "scope-native-skips",
-        "native-setup-node",
-        "openclaw-native-instance",
-        "openclaw-native-retry",
-        "native-event-admission",
-        "native-event-generation",
-        "native-event-final-admission",
-        "native-release-update-race",
-        "native-owner-update-race",
-        "openclaw-native-startup-contract",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "scope-native-skips"
       ],
       "security": [
         "security-retry",
@@ -1464,8 +1271,7 @@
       "tokenless": [
         "final-replacement",
         "scope-openclaw-names",
-        "scope-openclaw-completion",
-        "openclaw-native-retry"
+        "scope-openclaw-completion"
       ]
     },
     "pi": {
@@ -1478,9 +1284,6 @@
           "block": [
             "security-retry",
             "scope-pi-order"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1530,17 +1333,7 @@
         "resident-bridge-expiry",
         "resident-bridge-generation",
         "pi-submission-cancel",
-        "pi-submission-entrypoint",
-        "pi-native-instance",
-        "pi-native-strict-admission",
-        "sdk-scope-observation-isolation",
-        "sdk-scope-observation-owner-exit",
-        "sdk-scope-observation-failure",
-        "pi-native-arguments",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "pi-submission-entrypoint"
       ],
       "security": [
         "security-retry",
@@ -1550,13 +1343,11 @@
         "pi-submission",
         "pi-submission-projection",
         "pi-strict-fault",
-        "pi-strict-version",
-        "input-rewrite"
+        "pi-strict-version"
       ],
       "tokenless": [
         "final-replacement",
-        "scope-pi-result",
-        "input-rewrite"
+        "scope-pi-result"
       ]
     },
     "qoder": {
@@ -1567,9 +1358,6 @@
           ],
           "block": [
             "security-retry"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1582,12 +1370,10 @@
         },
         "input.submit": {
           "observe": [
-            "submit-qoder-cli",
-            "qoder-instance-input"
+            "submit-qoder-cli"
           ],
           "block": [
-            "submit-qoder-cli",
-            "qoder-instance-input"
+            "submit-qoder-cli"
           ]
         }
       },
@@ -1611,31 +1397,15 @@
         "attach-rollback-confirmed",
         "attach-relocated-group",
         "attach-relative-script",
-        "scope-native-skips",
-        "qoder-instance-input",
-        "qoder-instance-input-timeout",
-        "qoder-native-start",
-        "qoder-native-start-isolation",
-        "qoder-native-start-recovery",
-        "native-event-admission",
-        "native-event-generation",
-        "native-event-final-admission",
-        "native-release-update-race",
-        "native-owner-update-race",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "scope-native-skips"
       ],
       "security": [
         "security-retry",
         "scope-native-skips",
-        "coverage-native-identity",
-        "input-rewrite"
+        "coverage-native-identity"
       ],
       "tokenless": [
-        "final-replacement",
-        "input-rewrite"
+        "final-replacement"
       ]
     },
     "qwenpaw": {
@@ -1646,9 +1416,6 @@
           ],
           "block": [
             "security-retry"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1725,16 +1492,7 @@
         "resident-bridge-generation",
         "python-scope-validity",
         "qwenpaw-native-configuration",
-        "qwenpaw-native-terminal-drain",
-        "native-setup-python",
-        "sdk-scope-observation-isolation",
-        "sdk-scope-observation-owner-exit",
-        "sdk-scope-observation-failure",
-        "qwenpaw-startup-readiness",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "qwenpaw-native-terminal-drain"
       ],
       "security": [
         "security-retry",
@@ -1754,14 +1512,12 @@
         "prompt-failure",
         "pii-policy",
         "pii-completeness",
-        "pii-residual",
-        "input-rewrite"
+        "pii-residual"
       ],
       "tokenless": [
         "final-replacement",
         "scope-sdk-result",
-        "qwenpaw-resident-denial",
-        "input-rewrite"
+        "qwenpaw-resident-denial"
       ]
     },
     "qoder-sdk": {
@@ -1774,9 +1530,6 @@
           "block": [
             "security-retry",
             "scope-qoder-sdk-order"
-          ],
-          "replace_input": [
-            "input-rewrite"
           ]
         },
         "tool.after": {
@@ -1829,17 +1582,7 @@
         "resident-policy-deadline",
         "resident-bridge-isolation",
         "resident-bridge-expiry",
-        "resident-bridge-generation",
-        "qoder-sdk-native-instance",
-        "sdk-scope-observation-isolation",
-        "sdk-scope-observation-owner-exit",
-        "sdk-scope-observation-failure",
-        "qoder-sdk-native-direct-ready",
-        "qoder-sdk-callback-deadline",
-        "service-expired-failure-actions",
-        "service-expired-capacity",
-        "service-expired-native-cleanup",
-        "service-expired-handoff"
+        "resident-bridge-generation"
       ],
       "security": [
         "security-retry",
@@ -1853,13 +1596,11 @@
         "pii-policy",
         "pii-completeness",
         "pii-residual",
-        "qoder-sdk-skill-resolution",
-        "input-rewrite"
+        "qoder-sdk-skill-resolution"
       ],
       "tokenless": [
         "security-retry",
-        "final-replacement",
-        "input-rewrite"
+        "final-replacement"
       ]
     }
   },

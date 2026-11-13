@@ -157,7 +157,10 @@ pub(super) fn invoke_bound(
         input,
         route.replacement_step.is_some(),
     )?;
-    let client = Client::from_identity(&binding.socket, binding.binding.identity.clone());
+    let client = Client::connect(&binding.socket, deadline)?;
+    if client.identity() != &binding.binding.identity {
+        return Err("stale hook binding".into());
+    }
     if close {
         let session_id = normalized["session_id"]
             .as_str()
@@ -244,7 +247,7 @@ pub(super) fn invoke_bound(
     emit(result?)
 }
 
-pub(super) fn emit(output: HookOutput) -> Result<Exit> {
+fn emit(output: HookOutput) -> Result<Exit> {
     std::io::stdout().write_all(&output.stdout)?;
     std::io::stdout().flush()?;
     std::io::stderr().write_all(&output.stderr)?;

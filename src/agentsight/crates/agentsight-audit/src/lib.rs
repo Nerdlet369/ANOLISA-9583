@@ -7,7 +7,7 @@ mod store;
 pub use models::{
     AuditCountBy, AuditEventFilter, AuditEventPage, AuditSession, AuditSessionPage, AuditSummary,
     ContainmentAction, ContainmentFailureStage, ContainmentLifecycle, RiskCase, RiskCaseDetail,
-    RiskCaseStatus, RiskCaseSummary, RiskSeverity, event_result,
+    RiskCaseStatus, RiskCaseSummary, RiskSeverity,
 };
 pub use service::{AuditService, AuditServiceError};
 #[cfg(target_os = "linux")]

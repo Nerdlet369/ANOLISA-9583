@@ -131,8 +131,6 @@ class TokenlessSdkTests(unittest.IsolatedAsyncioTestCase):
             AppliedOperation("build_log_reduction"),
             AppliedOperation.BUILD_LOG_REDUCTION,
         )
-        with self.assertRaises(ValueError):
-            AppliedOperation("unknown_operation")
 
     async def test_before_model_compresses_schema_and_scopes_retrieve(self) -> None:
         sdk = self.sdk(rtk_enabled=False)
@@ -242,29 +240,10 @@ class TokenlessSdkTests(unittest.IsolatedAsyncioTestCase):
                 "rtk_enabled",
                 "search_path_sharing_enabled",
                 "diff_compression_enabled",
-                "mixed_content_enabled",
                 "html_extraction_enabled",
                 "compression_enabled",
             },
         )
-
-    def test_legacy_positional_config_preserves_disabled_compression(self) -> None:
-        for mixed_enabled in (False, True):
-            with self.subTest(mixed_enabled=mixed_enabled), patch.dict(
-                os.environ,
-                {
-                    "TOKENLESS_COMPRESSION_ENABLED": "1",
-                    "TOKENLESS_HTML_EXTRACTION_ENABLED": "1",
-                    "TOKENLESS_MIXED_CONTENT_ENABLED": "1" if mixed_enabled else "0",
-                },
-            ):
-                config = TokenlessConfig(
-                    None, "tokenless_retrieve", True, True, True, False, False
-                )
-                self.assertFalse(config.compression_enabled)
-                self.assertFalse(config.html_extraction_enabled)
-                self.assertTrue(config.diff_compression_enabled)
-                self.assertEqual(config.mixed_content_enabled, mixed_enabled)
 
     async def test_environment_controls_sdk_candidates_and_explicit_overrides(self) -> None:
         with patch.dict(
@@ -313,46 +292,6 @@ class TokenlessSdkTests(unittest.IsolatedAsyncioTestCase):
             TokenlessConfig(retrieve_tool_name="tenant-retrieve_2").retrieve_tool_name,
             "tenant-retrieve_2",
         )
-
-    async def test_mixed_content_environment_default_and_explicit_override(self) -> None:
-        body = json.dumps([{"id": i, "name": "record " * 20} for i in range(10)], indent=4)
-        content = f"before\n{body}\nafter\n"
-        request = PostToolRequest(
-            result_kind=ResultKind.TOOL,
-            tool_name="api_call",
-            content=content,
-            status=ToolResultStatus.SUCCESS,
-            content_origin=ContentOrigin.API_RESPONSE,
-            output_optimization=OutputOptimization.NONE,
-            capabilities=PostToolCapabilities(
-                replace_output=True,
-                replace_with_text=True,
-                recovery=RecoveryMethod(),
-            ),
-            attribution=Attribution("test-agent", "mixed-session", "mixed-tool-call"),
-        )
-        for env_value, override, enabled in [
-            ("", None, False),
-            ("0", None, False),
-            ("TRUE", None, True),
-            ("yes", None, True),
-            ("1", False, False),
-            ("0", True, True),
-        ]:
-            with self.subTest(env_value=env_value, override=override):
-                options = {} if override is None else {"mixed_content_enabled": override}
-                with patch.dict(os.environ, {"TOKENLESS_MIXED_CONTENT_ENABLED": env_value}):
-                    sdk = self.sdk(rtk_enabled=False, compression_enabled=True, **options)
-                self.assertEqual(sdk.config.mixed_content_enabled, enabled)
-                result = await sdk.post_tool(request)
-                if enabled:
-                    self.assertEqual(result.disposition.value, "applied")
-                    self.assertTrue(result.output.startswith("before\n"))
-                    self.assertTrue(result.output.endswith("\nafter\n"))
-                    self.assertLess(len(result.output), len(content))
-                else:
-                    self.assertEqual(result.disposition.value, "passthrough")
-                    self.assertEqual(result.output, content)
 
     def test_packaged_launcher_requires_a_stable_filesystem_resource(self) -> None:
         with patch("anolisa_tokenless.sdk.files") as package_files:
@@ -684,77 +623,6 @@ class TokenlessSdkTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(json.loads(restored.payload), records)
-
-    async def test_pnpm_layout_compaction_preserves_dependency_rows_without_recovery(self) -> None:
-        sdk = self.sdk(rtk_enabled=False)
-        # Synthetic dependency list: repeated rows and removals must retain their order.
-        rows = [
-            ("+", "@types/node", "25.9.9", "26.6.6"),
-            ("+", "typescript", "5.9.3", "7.0.2"),
-            ("-", "vitest", "3.2.7", "5.1.0"),
-            ("+", "typescript", "5.9.3", "7.0.2"),
-            ("+", "esbuild", "0.28.2", None),
-        ]
-        original = "devDependencies:\n" + "".join(
-            f"{sign} {name} {version}"
-            + (f" ({available} is available)" if available else "")
-            + "\n"
-            for sign, name, version, available in rows
-        ) + "\nDone in 13.8s using pnpm v10.33.4\n"
-        result = await sdk.post_tool(
-            PostToolRequest(
-                result_kind=ResultKind.TOOL,
-                tool_name="shell",
-                content=original,
-                status=ToolResultStatus.SUCCESS,
-                content_origin=ContentOrigin.COMMAND_OUTPUT,
-                output_optimization=OutputOptimization.NONE,
-                capabilities=PostToolCapabilities(True, RecoveryMethod(), True),
-                attribution=Attribution("sdk-agent", "sdk-session", "pnpm-layout"),
-            )
-        )
-        self.assertEqual(result.disposition.value, "applied")
-        self.assertEqual(result.content_type, ContentType.BUILD_LOG)
-        self.assertEqual(result.applied_operations, (AppliedOperation.BUILD_LOG_REDUCTION,))
-        self.assertEqual(result.recoverability.value, "lossless")
-        self.assertEqual(result.stash_keys, ())
-        self.assertLess(len(result.output), len(original))
-        self.assertLess(result.after_tokens, result.before_tokens)
-        self.assertEqual(
-            result.output,
-            "devDependencies (version; available):\n" + "".join(
-                f"{sign} {name} {version}" + (f"; {available}" if available else "") + "\n"
-                for sign, name, version, available in rows
-            ) + "\nDone in 13.8s using pnpm v10.33.4\n",
-        )
-
-    async def test_post_tool_rejects_unknown_applied_operations(self) -> None:
-        sdk = self.sdk(rtk_enabled=False)
-        request = PostToolRequest(
-            result_kind=ResultKind.TOOL,
-            tool_name="shell",
-            content="original output",
-            status=ToolResultStatus.SUCCESS,
-            content_origin=ContentOrigin.COMMAND_OUTPUT,
-            output_optimization=OutputOptimization.NONE,
-            capabilities=PostToolCapabilities(True, RecoveryMethod(), True),
-            attribution=Attribution("sdk-agent", "sdk-session", "unknown-operation"),
-        )
-        with patch.object(sdk, "runtime") as runtime:
-            runtime._post_tool_json.return_value = json.dumps({
-                "output": "compact",
-                "disposition": "applied",
-                "content_type": "build_log",
-                "applied_operations": ["build_log_reduction", "unknown_operation"],
-                "recoverability": "lossless",
-                "before_tokens": 20,
-                "after_tokens": 2,
-                "stash_keys": [],
-                "tokenizer_id": "heuristic-v1",
-            })
-            with self.assertRaisesRegex(ValueError, "unknown_operation"):
-                await sdk.post_tool(request)
-            runtime._post_tool_json.assert_called_once()
 
     async def test_search_path_sharing_exposes_the_typed_operation(self) -> None:
         sdk = self.sdk(rtk_enabled=False)

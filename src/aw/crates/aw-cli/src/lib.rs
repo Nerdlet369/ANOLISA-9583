@@ -1,6 +1,5 @@
 //! Unified AW command presentation and orchestration over reusable framework libraries.
 
-mod audit_export;
 mod cli;
 mod command;
 mod output;
@@ -63,17 +62,7 @@ fn runtime(command: &str, args: &cli::Arguments) -> cli::Result<cli::Exit> {
     }
     if matches!(
         command,
-        "run"
-            | "hook"
-            | "install"
-            | "policy"
-            | "update"
-            | "bridge"
-            | "scope"
-            | "qoder-bootstrap"
-            | "native-setup"
-            | "native-prepare"
-            | "native-release"
+        "run" | "hook" | "install" | "policy" | "update" | "bridge" | "scope"
     ) {
         return cli::dispatch(command, args);
     }

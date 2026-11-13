@@ -15,8 +15,6 @@ use serde_json::{json, Value};
 
 use crate::ports::{Journal, JournalError};
 
-pub mod reader;
-
 const SOURCE_ID: &str = "aw-core-file-journal-v1";
 
 struct Claim {

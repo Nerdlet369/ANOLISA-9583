@@ -40,11 +40,8 @@ def rpc(endpoint: Path, method: str, params: dict | None = None) -> dict:
 
 def policy_source(requirement: str, excluded: Path | None = None) -> dict:
     """Use the same OS contract and Cedar schema as the running implementation."""
-    type_condition = 'when { principal has agent_type && ["codex", "cosh"].contains(principal.agent_type) };'
-    command = (
-        'permit(principal is SecCore::Subject, action == SecCore::Action::"process.spawn", resource) '
-        + type_condition
-    )
+    command = 'permit(principal, action == SecCore::Action::"process.spawn", resource) '
+    command += 'when { principal has agent_type && ["codex", "cosh"].contains(principal.agent_type) };'
     warning = ""
     if requirement in {"warn", "ask"}:
         warning = (
@@ -55,13 +52,11 @@ def policy_source(requirement: str, excluded: Path | None = None) -> dict:
     if requirement == "ask":
         command = '@advice("{\\"verdict\\":\\"escalate\\"}")\n' + command
     text = (
-        'permit(principal is SecCore::Subject, action == SecCore::Action::"file.read", resource) '
+        'permit(principal, action == SecCore::Action::"file.read", resource) '
         'when { resource.path == "/" || resource.path like "/*" };\n'
-        'permit(principal is SecCore::Subject, action == SecCore::Action::"file.write", resource) '
+        'permit(principal, action == SecCore::Action::"file.write", resource) '
         'when { resource.path == "/" || resource.path like "/*" };\n'
-        'permit(principal is SecCore::Subject, action == SecCore::Action::"file.exec", resource) '
-        + type_condition
-        + "\n"
+        'permit(principal, action == SecCore::Action::"file.exec", resource);\n'
         + command
         + "\n"
         + warning
@@ -70,7 +65,7 @@ def policy_source(requirement: str, excluded: Path | None = None) -> dict:
         path = json.dumps(str(excluded))
         descendants = json.dumps(str(excluded) + "/*")
         text += (
-            '\nforbid(principal is SecCore::Subject, action == SecCore::Action::"file.read", resource) '
+            '\nforbid(principal, action == SecCore::Action::"file.read", resource) '
             f"when {{ resource.path == {path} || resource.path like {descendants} }};"
         )
     if requirement == "modify":
@@ -86,7 +81,9 @@ def policy_source(requirement: str, excluded: Path | None = None) -> dict:
         }
         text += "\n@advice(" + json.dumps(json.dumps(advice)) + ")\n" + command
     if requirement == "deny":
-        text += '\nforbid(principal is SecCore::Subject, action == SecCore::Action::"process.spawn", resource);'
+        text += (
+            '\nforbid(principal, action == SecCore::Action::"process.spawn", resource);'
+        )
     return {
         "language": "cedar",
         "content": {
@@ -167,7 +164,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
         "PATH": "/usr/bin:/bin",
         "RUST_LOG": "info",
     }
-    example_principal = {"agent_type": "codex"}
+    example_principal = {"agent_id": "acceptance-agent", "agent_type": "codex"}
     command = [
         str(example),
         "--helper",
@@ -176,6 +173,8 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
         str(endpoint),
         "--permissions",
         str(permission_file),
+        "--agent-id",
+        "acceptance-agent",
         "--agent-type",
         "codex",
     ]
@@ -231,6 +230,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
             write_json(
                 config,
                 {
+                    "baseline_policy": policy_id,
                     "environment_permissions": permissions,
                     "ttl_seconds": 2,
                 },
@@ -256,47 +256,6 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
                     and "authorization config" in rejected.stderr
                 ), rejected
             process = start(daemon_command + ["--authorization-config", str(config)])
-            type_request = {
-                "type": "os",
-                "request_id": "type-match",
-                "execution_id": "type-match",
-                "principal": {},
-                "launch": {
-                    "program": "true",
-                    "resolved_program": "/usr/bin/true",
-                    "args": [],
-                    "cwd": str(work),
-                },
-                "requested_permissions": permissions,
-            }
-            for principal, expected in [
-                ({"agent_type": "codex"}, "ALLOW"),
-                ({"agent_type": "qoder"}, "DENY"),
-                ({}, "DENY"),
-            ]:
-                type_request["principal"] = principal
-                evaluated = rpc(endpoint, "authorization.evaluate", type_request)
-                assert evaluated.get("result", {}).get("verdict") == expected, evaluated
-                reported = rpc(
-                    endpoint,
-                    "authorization.report",
-                    {
-                        "decision_id": evaluated["result"]["decision_id"],
-                        "request_id": type_request["request_id"],
-                        "execution_id": type_request["execution_id"],
-                        "approval": None,
-                        "recorded_at": int(time.time()),
-                        "result": {
-                            "installed": False,
-                            "started": False,
-                            "exit_code": None,
-                            "signal": None,
-                            "cancel_signal": None,
-                            "error": "authorization-only probe",
-                        },
-                    },
-                )
-                assert "result" in reported, reported
             persisted = rpc(
                 endpoint,
                 "policy.templates.get",
@@ -609,7 +568,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
                 ]
                 assert len(matches) == 1, matches
                 details = matches[0]["details"]
-                assert details["principal"] == {"agent_type": "cosh"}, details
+                assert details["principal"]["agent_type"] == "cosh", details
                 assert details["result"]["started"] is started, details
                 assert details["approval"] is approval, details
                 receipt(
@@ -622,7 +581,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
                         "verdict": details["verdict"],
                         "result": details["result"],
                     },
-                    {"agent_type": "cosh"},
+                    {"agent_id": "cosh:cosh-e2e", "agent_type": "cosh"},
                 )
 
             publish("warn")
@@ -709,7 +668,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
                 {"id": policy_id, "revision": current["revision"]},
             )
             assert "result" in deleted, deleted
-            denied = subprocess.run(
+            unavailable = subprocess.run(
                 command + ["--", "/bin/sh", "-c", "printf stale > after-delete"],
                 cwd=work,
                 env=environment,
@@ -718,8 +677,7 @@ def exercise(daemon: Path, example: Path, helper: Path, root: Path) -> None:
                 timeout=20,
                 check=False,
             )
-            assert denied.returncode != 0, (denied.stdout, denied.stderr)
-            assert json.loads(denied.stdout)["verdict"] == "DENY", denied
+            assert unavailable.returncode != 0, (unavailable.stdout, unavailable.stderr)
             assert not (
                 work / "after-delete"
             ).exists(), "deleted policy fell back to a cached grant"

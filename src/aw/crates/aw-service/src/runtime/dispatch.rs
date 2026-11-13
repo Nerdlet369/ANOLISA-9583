@@ -1,13 +1,13 @@
 //! Dispatch the versioned service control operations.
 
-use super::Runtime;
+use super::{Job, Runtime};
 use crate::{rejected, Operation, Result};
 use aw_host::ProcessContext;
 use serde_json::{json, Value};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     time::Instant,
 };
@@ -60,9 +60,7 @@ impl Runtime {
                 valid,
             } => self.check_scope(&instance_id, pid, &policy_revision, valid),
             Operation::ScopePolicy { instance_id } => self.scope_policy(&instance_id),
-            Operation::AcknowledgeScope { instance_id } => {
-                self.acknowledge_scope(&instance_id, deadline)
-            }
+            Operation::AcknowledgeScope { instance_id } => self.acknowledge_scope(&instance_id),
             Operation::OwnInstance { instance_id, pid } => self.own_instance(&instance_id, pid),
             Operation::OpenScope {
                 parent_id,
@@ -159,17 +157,37 @@ impl Runtime {
                 instance_id,
                 step_id,
                 native_environment,
-            } => self.invoke_event_step(
-                &event_id,
-                &instance_id,
-                step_id,
-                native_environment,
-                deadline,
-            ),
+            } => {
+                self.check_scope_owner(&instance_id)?;
+                let (sender, cancelled) = self.event_sender(&event_id, &instance_id)?;
+                let (reply, result) = mpsc::sync_channel(1);
+                sender
+                    .try_send(Job::Invoke {
+                        step: step_id,
+                        native_environment,
+                        reply,
+                    })
+                    .map_err(|_| rejected("event_busy_or_closed"))?;
+                result
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| {
+                        cancelled.store(true, Ordering::Release);
+                        rejected("event_reply_unavailable")
+                    })?
+            }
             Operation::CloseEvent {
                 event_id,
                 instance_id,
-            } => self.close_event(&event_id, &instance_id, deadline),
+            } => {
+                let (sender, _) = self.event_sender(&event_id, &instance_id)?;
+                let (reply, result) = mpsc::sync_channel(1);
+                sender
+                    .try_send(Job::Close { reply })
+                    .map_err(|_| rejected("event_busy_or_closed"))?;
+                result
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| rejected("event_reply_unavailable"))?
+            }
             Operation::Unbind { instance_id } => {
                 let mut instances = self
                     .instances

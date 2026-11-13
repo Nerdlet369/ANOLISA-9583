@@ -97,7 +97,7 @@ fn empty_policy_starts_native_app_and_releases_owned_files() {
         String::from_utf8_lossy(&output.stderr)
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["ready_hook_count"], 2);
+    assert_eq!(result["ready_hook_count"], 0);
     assert_eq!(result["tool_executed"], true);
     assert!(!fixture.root.join("order.jsonl").exists());
     preserved(&fixture);
@@ -116,7 +116,7 @@ fn app_versions_still_require_native_registration_and_cleanup() {
             format!("QwenPaw, version {version}"),
         );
         let result = fixture.successful(command);
-        assert_eq!(result["ready_hook_count"], 2);
+        assert_eq!(result["ready_hook_count"], 0);
         assert_eq!(result["tool_executed"], true);
         preserved(&fixture);
         service.released(&fixture);
@@ -442,17 +442,15 @@ fn native_callback_environment_preserves_profile_changes_without_rebinding_provi
 }
 
 #[test]
-fn native_startup_fences_requests_until_plugin_ready() {
+fn resident_observation_is_rejected_before_launch() {
     let fixture = Fixture::new();
-    let mut command = Command::new(&fixture.python);
-    command.arg(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/fixtures/qwenpaw/startup_unit.py"
-    ));
-    let result = fixture.run(command);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let mut document = setup(&fixture);
+    fixture.observation(&mut document, "qwenpaw");
+    let service = Service::start(&fixture, &document);
+    let output = fixture.run(launch(&fixture));
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("resident task scopes do not support native evidence"));
+    preserved(&fixture);
+    service.released(&fixture);
 }

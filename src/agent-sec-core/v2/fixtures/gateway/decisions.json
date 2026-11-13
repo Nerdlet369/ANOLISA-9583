@@ -1,28 +1,6 @@
 {
   "comment": "Synthetic values only. Shared by the Rust plan tests and the gateway addon tests.",
   "plan": "github-dev-agent.plan.json",
-  "pathCases": [
-    {"constraint": {"kind": "eq", "value": "/api/a*b"}, "path": "/api/a*b", "matches": true},
-    {"constraint": {"kind": "eq", "value": "/api/a*b"}, "path": "/api/axxb", "matches": false},
-    {"constraint": {"kind": "eq", "value": "/api/a*b"}, "path": "/api/a/b", "matches": false},
-    {"constraint": {"kind": "like", "value": "/api/a*b"}, "path": "/api/a*b", "matches": true},
-    {"constraint": {"kind": "like", "value": "/api/a*b"}, "path": "/api/axxb", "matches": true},
-    {"constraint": {"kind": "like", "value": "/api/a*b"}, "path": "/api/a/b", "matches": true},
-    {"constraint": {"kind": "like", "value": "/*/info/refs"}, "path": "/o/r.git/info/refs", "matches": true},
-    {"constraint": {"kind": "like", "value": "/*/info/refs"}, "path": "/g/sub/r.git/info/refs", "matches": true},
-    {"constraint": {"kind": "like", "value": "/*/info/refs"}, "path": "/info/refs", "matches": false},
-    {"constraint": {"kind": "like", "value": "/*/info/refs"}, "path": "/o/r.git/info/refs/x", "matches": false},
-    {"constraint": {"kind": "like", "value": "/repos/*/issues"}, "path": "/repos/o/r/issues", "matches": true},
-    {"constraint": {"kind": "like", "value": "/*"}, "path": "/", "matches": true},
-    {"constraint": {"kind": "like", "value": "/files/\\*.txt"}, "path": "/files/*.txt", "matches": true},
-    {"constraint": {"kind": "like", "value": "/files/\\*.txt"}, "path": "/files/a.txt", "matches": false},
-    {"constraint": {"kind": "eq", "value": "/files/[ab].txt"}, "path": "/files/[ab].txt", "matches": true},
-    {"constraint": {"kind": "like", "value": "/files/[ab].txt"}, "path": "/files/a.txt", "matches": false},
-    {"constraint": {"kind": "like", "value": "/files/[ab].txt"}, "path": "/files/[ab].txt", "matches": true},
-    {"constraint": {"kind": "like", "value": "/a*b*c"}, "path": "/abbbc", "matches": true},
-    {"constraint": {"kind": "like", "value": "/a*b*c"}, "path": "/abc/xc", "matches": true},
-    {"constraint": {"kind": "like", "value": "/a*b*c"}, "path": "/abcx", "matches": false}
-  ],
   "listeners": [
     {
       "port": 15001,
@@ -34,32 +12,35 @@
     }
   ],
   "secrets": {
-    "version": 2,
+    "version": 1,
     "generation": 1,
     "entries": [
       {
         "fake": "tkn_FakeDevAgent1FakeDevAgent1FakeDevAge",
         "credential": "github",
-        "scopeIds": ["00000000-0000-4000-8000-000000000001"],
-        "real": "tkn_SyntheticReal0SyntheticReal0Syntheti"
+        "scopeId": "00000000-0000-4000-8000-000000000001",
+        "real": "tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "carriers": [
+          "header_token",
+          "basic_password"
+        ]
       },
       {
         "fake": "tkn_FakeOtherAgent2FakeOtherAgent2FakeOt",
-        "credential": "pair-other",
-        "scopeIds": ["00000000-0000-4000-8000-000000000002"],
-        "real": "tkn_SyntheticReal0SyntheticReal0Syntheti"
+        "credential": "github",
+        "scopeId": "00000000-0000-4000-8000-000000000002",
+        "real": "tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "carriers": [
+          "header_token",
+          "basic_password"
+        ]
       }
     ],
     "retired": [
       {
         "fake": "tkn_RetiredFake3RetiredFake3RetiredFake3",
-        "credential": "pair-retired"
-      }
-    ],
-    "unavailable": [
-      {
-        "fake": "tkn_UnavailableFake4UnavailableFake4Una",
-        "credential": "pending-key"
+        "credential": "github",
+        "scopeId": "00000000-0000-4000-8000-000000000001"
       }
     ]
   },
@@ -67,49 +48,12 @@
     "real": "tkn_SyntheticReal0SyntheticReal0Syntheti",
     "fake": "tkn_FakeDevAgent1FakeDevAgent1FakeDevAge",
     "otherFake": "tkn_FakeOtherAgent2FakeOtherAgent2FakeOt",
-    "retiredFake": "tkn_RetiredFake3RetiredFake3RetiredFake3",
-    "unavailableFake": "tkn_UnavailableFake4UnavailableFake4Una"
+    "retiredFake": "tkn_RetiredFake3RetiredFake3RetiredFake3"
   },
   "cases": [
     {
-      "name": "unavailable fake in an unconfigured header is not passthrough",
-      "facts": {"port": 15001, "tls": true, "sni": "example.com", "authority": "example.com", "targetAuthority": null, "method": "GET", "path": "/", "headers": [["X-Unconfigured", "tkn_UnavailableFake4UnavailableFake4Una"]]},
-      "expect": {"action": "reject", "code": "credential_not_allowed"}
-    },
-    {
-      "name": "auto preserves arbitrary prefix and suffix",
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": null, "method": "GET", "path": "/v1/echo", "headers": [["Authorization", "Vendor prefix=tkn_FakeDevAgent1FakeDevAgent1FakeDevAge; suffix"]]},
-      "expect": {"action": "inject", "code": "credential_injected", "rule": 0, "header": "Authorization", "headerValue": "Vendor prefix=tkn_SyntheticReal0SyntheticReal0Syntheti; suffix", "responseRewrite": true}
-    },
-    {
-      "name": "managed fake in an unconfigured header cannot pass through",
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": null, "method": "GET", "path": "/v1/echo", "headers": [["X-Unconfigured", "tkn_FakeDevAgent1FakeDevAgent1FakeDevAge"]]},
-      "expect": {"action": "reject", "code": "credential_not_allowed"}
-    },
-    {
-      "name": "repeated managed fake in auto is ambiguous",
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": null, "method": "GET", "path": "/v1/echo", "headers": [["Authorization", "tkn_FakeDevAgent1FakeDevAgent1FakeDevAgetkn_FakeDevAgent1FakeDevAgent1FakeDevAge"]]},
-      "expect": {"action": "reject", "code": "ambiguous_credential"}
-    },
-    {
-      "name": "basic-only rule cannot inject a raw fake",
-      "planRuleIndices": [1],
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": null, "method": "GET", "path": "/v1/echo", "headers": [["Authorization", "tkn_FakeDevAgent1FakeDevAgent1FakeDevAge"]]},
-      "expect": {"action": "reject", "code": "credential_not_allowed"}
-    },
-    {
-      "name": "basic fake in a wrong header cannot pass through",
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": null, "method": "GET", "path": "/v1/echo", "headers": [["X-Unconfigured", "Basic eC1hY2Nlc3MtdG9rZW46dGtuX0Zha2VEZXZBZ2VudDFGYWtlRGV2QWdlbnQxRmFrZURldkFnZQ=="]]},
-      "expect": {"action": "reject", "code": "credential_not_allowed"}
-    },
-    {
-      "name": "absolute-form target port cannot change the verified authority",
-      "facts": {"port": 15001, "tls": true, "sni": "api.github.com", "authority": "api.github.com", "targetAuthority": "api.github.com:8443", "method": "GET", "path": "/v1/echo", "headers": [["Authorization", "Bearer tkn_FakeDevAgent1FakeDevAgent1FakeDevAge"]]},
-      "expect": {"action": "reject", "code": "authority_mismatch"}
-    },
-    {
       "name": "projected plan decision uses array position rather than authored source index",
-      "planRuleIndices": [2, 4, 6],
+      "planRuleIndices": [1, 2, 3],
       "facts": {
         "port": 15001,
         "tls": true,
@@ -126,8 +70,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -193,8 +137,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -222,8 +166,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "token tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "token tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -251,8 +195,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -280,8 +224,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -334,13 +278,13 @@
       "expect": {
         "action": "inject",
         "code": "credential_injected",
-        "rule": 3,
-        "header": "Authorization", "headerValue": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
-        "responseRewrite": true
+        "rule": 1,
+        "authorization": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
+        "responseRewrite": "buffered"
       }
     },
     {
-      "name": "upload pack injects without response rewriting",
+      "name": "upload pack streams",
       "facts": {
         "port": 15001,
         "tls": true,
@@ -363,13 +307,13 @@
       "expect": {
         "action": "inject",
         "code": "credential_injected",
-        "rule": 5,
-        "header": "Authorization", "headerValue": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
-        "responseRewrite": true
+        "rule": 2,
+        "authorization": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
+        "responseRewrite": "none"
       }
     },
     {
-      "name": "receive pack injects with response rewriting",
+      "name": "receive pack is buffered",
       "facts": {
         "port": 15001,
         "tls": true,
@@ -392,9 +336,9 @@
       "expect": {
         "action": "inject",
         "code": "credential_injected",
-        "rule": 7,
-        "header": "Authorization", "headerValue": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
-        "responseRewrite": true
+        "rule": 3,
+        "authorization": "Basic eC1hY2Nlc3MtdG9rZW46dGtuX1N5bnRoZXRpY1JlYWwwU3ludGhldGljUmVhbDBTeW50aGV0aQ==",
+        "responseRewrite": "buffered"
       }
     },
     {
@@ -802,7 +746,7 @@
       },
       "expect": {
         "action": "reject",
-        "code": "duplicate_header"
+        "code": "duplicate_authorization"
       }
     },
     {
@@ -828,7 +772,7 @@
       },
       "expect": {
         "action": "reject",
-        "code": "malformed_basic"
+        "code": "malformed_authorization"
       }
     },
     {
@@ -1078,8 +1022,8 @@
         "action": "inject",
         "code": "credential_injected",
         "rule": 0,
-        "header": "Authorization", "headerValue": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
-        "responseRewrite": true
+        "authorization": "Bearer tkn_SyntheticReal0SyntheticReal0Syntheti",
+        "responseRewrite": "buffered"
       }
     },
     {

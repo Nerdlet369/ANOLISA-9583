@@ -368,11 +368,7 @@ it is not rejected as implicit drift. An explicit backend-type switch also
 does not adopt data from the previous backend. In either case, previous
 snapshots become invisible and startup reconciliation can prune unpinned
 snapshot records from `/var/lib/ws-ckpt/indexes`. **Pointing back does not
-recover pruned records**; their message, creation time and ancestry are lost.
-Snapshot subvolumes still on the previous root reappear as pinned
-[recovered orphans](#snapshot-recovery-after-an-interrupted-cleanup) that
-auto-cleanup skips; review them with `ws-ckpt list --orphans` and delete them
-explicitly. Stop the daemon and back up the manifest, indexes
+recover pruned records.** Stop the daemon and back up the manifest, indexes
 and snapshot data before an intentional switch. This setting does not migrate
 any data.
 
@@ -429,15 +425,8 @@ instances. If the host supplies no `sessionKey`, rollback remains available but
 does not arm suppression, and an unidentified hook cannot clear another session's
 state. Tool factories do not supply `runId`, so this does not distinguish
 concurrent runs within one session. Pending state stays in memory until its
-matching turn ends or the plugin process exits.
-
-Hermes binds the rollback tool to the `session_id` that the host passes to tool
-handlers and to `on_session_end`. Another session's turn end cannot consume that
-state, and a turn end without `session_id` cannot clear another session's state.
-Hermes forwards `session_id` to tool handlers from 2026.6.19; on earlier
-versions, rollback remains available but does not arm suppression, so the next
-turn-end checkpoint is created normally. Pending state stays in memory until
-its session's next turn ends or the plugin process exits.
+matching turn ends or the plugin process exits. Hermes retains workspace-scoped state; this change does not add session
+ownership to its hooks.
 
 You can address a rollback by workspace ID or registered path. A bare selector
 (with no path separator, except `.` and `..`) is resolved through

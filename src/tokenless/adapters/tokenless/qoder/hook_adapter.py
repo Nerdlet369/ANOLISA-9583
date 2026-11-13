@@ -67,12 +67,13 @@ def response(data: dict) -> ToolResult:
         skip()
     envelope = value
     minimum = 200
-    can_replace = True
-    if tool == "Bash" and isinstance(envelope, dict):
-        # The native renderer consumes stdout, so no other field is replaceable.
-        stdout = envelope.get("stdout")
-        field = ("stdout", stdout) if isinstance(stdout, str) else None
-        can_replace = field is not None
+    if (
+        tool == "Bash"
+        and isinstance(envelope, dict)
+        and isinstance(envelope.get("stdout"), str)
+    ):
+        # The native renderer consumes stdout even when stderr is larger.
+        field = ("stdout", envelope["stdout"])
     else:
         field = (
             select_text_field(envelope, ("stdout", "stderr"), minimum)
@@ -81,6 +82,7 @@ def response(data: dict) -> ToolResult:
         )
     arguments = data.get("tool_input", {})
     origin = content_origin(tool)
+    can_replace = True
     command = (
         arguments.get("command")
         if origin == "command_output" and isinstance(arguments, dict)
@@ -105,9 +107,6 @@ def response(data: dict) -> ToolResult:
 
 
 def response_output(data: dict, result: ToolResult, output: str, message: str) -> dict:
-    if not result.replace_output:
-        warn("tokenless compress returned an applied result for non-replaceable Qoder output.")
-        return diagnostic_output(message)
     updated = result.replacement(output)
     if updated is None:
         warn("tokenless compress returned non-JSON for a structured slot.")

@@ -273,12 +273,9 @@ pub(crate) fn remember_agent_activity(active_run: &mut ActiveAgentRun, governed:
                 active_run.current_phase = i18n.t(MessageId::AgentStatusCompleted).to_string();
                 active_run.current_message = display_agent_summary(summary, &i18n);
             }
-            AgentEvent::AgentFailed {
-                error, error_code, ..
-            } => {
+            AgentEvent::AgentFailed { error, .. } => {
                 active_run.current_phase = i18n.t(MessageId::AgentStatusFailed).to_string();
-                active_run.current_message =
-                    display_agent_error(error, error_code.as_deref(), &i18n);
+                active_run.current_message = display_agent_error(error, &i18n);
             }
             AgentEvent::AgentCancelled { reason, .. } => {
                 active_run.current_phase = i18n.t(MessageId::AgentStatusCancelled).to_string();

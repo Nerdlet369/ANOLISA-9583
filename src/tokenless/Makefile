@@ -183,7 +183,7 @@ build-dsh-plugin: stamp-adapter-templates
 # Run tests
 test: test-tokenless test-hooks test-integration test-rtk-integration test-hook-parity \
       test-adapters test-claude-code-detect test-raw-package \
-      test-npm-package test-stale-helper-cleanup test-benchmark-rtk-probe test-benchmark-l4
+      test-npm-package test-stale-helper-cleanup test-benchmark-rtk-probe
 
 test-tokenless:
 	@echo "==> Testing tokenless..."
@@ -214,7 +214,6 @@ test-hook-scripts:
 	@echo "==> Testing tokenless hook scripts (no external dependencies)..."
 	bash tests/test-run-hook-install-scope.sh
 	bash tests/test-tool-ready-readable-fixer.sh
-	bash tests/test-codex-install-home-unset.sh
 
 test-hooks: test-hook-scripts
 	@echo "==> Testing copilot-shell hooks..."
@@ -287,7 +286,6 @@ test-qwenwork-hooks:
 	python3 tests/test_compress_response_hook.py
 	python3 tests/test_hook_contract.py
 	python3 tests/test_rewrite_hook.py
-	python3 tests/test_rewrite_benchmark.py
 	python3 tests/test_resolve_agent_id.py
 
 test-qwenwork-install:
@@ -308,14 +306,6 @@ test-qwenwork-install:
 test-benchmark-rtk-probe:
 	@echo "==> Testing benchmark RTK version probe..."
 	bash tests/test-benchmark-rtk-version-probe.sh
-
-# L4 离线测试仅使用临时夹具，不启动 Docker 或模型调用。
-.PHONY: test-benchmark-l4
-L4_TEST_PYTHON ?= python3
-test-benchmark-l4:
-	PYTHONPATH="$(abspath ../../benchmark/swe-runner/src)" $(L4_TEST_PYTHON) -m pytest -q \
-	    benchmark/l4-end-to-end/tests ../../benchmark/swe-runner/tests/unit/trace_extraction/test_openclaw_sqlite.py
-	@for script in benchmark/l4-end-to-end/assets/scripts/*.sh; do bash -n "$$script" || exit 1; done
 
 # Hook counterfactuals need the real binary to rule out fail-open success.
 test-rtk-integration: test-benchmark-rtk-probe
@@ -709,7 +699,6 @@ help:
 	@echo "  test              Run all tests"
 	@echo "  test-rtk-integration  Test the embedded RTK's Tokenless patches"
 	@echo "  test-benchmark-rtk-probe  Test the L1 runner's bounded rtk --version probe"
-	@echo "  test-benchmark-l4  Test the offline L4 harness and SQLite billing (L4_TEST_PYTHON)"
 	@echo "  test-hook-scripts  Test the dependency-free hook bash suites (run in CI)"
 	@echo "  test-openclaw-host-contract  Replay the installed host contract (OPENCLAW_TEST_DIST required)"
 	@echo "  lint              Run clippy checks"

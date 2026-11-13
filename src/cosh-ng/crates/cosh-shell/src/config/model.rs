@@ -1,7 +1,5 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
-
 use crate::tools::readonly_rules::RuntimeReadonlyConfig;
 use crate::types::CoshApprovalMode;
 
@@ -68,15 +66,12 @@ impl Default for RecommendationsConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealthConfig {
     pub enabled: bool,
     pub role: Option<String>,
     pub memory_sensitive: bool,
     pub critical_mounts: Vec<String>,
-    pub scan_mounts: Option<Vec<String>>,
-    pub checks: std::collections::BTreeMap<String, bool>,
-    pub policies: std::collections::BTreeMap<String, Vec<String>>,
     pub verbose: bool,
     pub services: Vec<HealthServiceConfig>,
 }
@@ -88,22 +83,19 @@ impl Default for HealthConfig {
             role: None,
             memory_sensitive: false,
             critical_mounts: vec!["/".to_string()],
-            scan_mounts: None,
-            checks: Default::default(),
-            policies: Default::default(),
             verbose: false,
             services: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HealthServiceConfig {
     pub name: String,
     pub expected: HealthServiceExpectedState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthServiceExpectedState {
     Active,
     Inactive,

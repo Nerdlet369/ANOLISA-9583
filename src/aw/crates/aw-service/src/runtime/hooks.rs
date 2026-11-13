@@ -139,10 +139,6 @@ impl Runtime {
                     .min(Duration::from_millis(5)),
             );
         }
-        self.expired
-            .lock()
-            .map_err(|_| rejected("state_poisoned"))?
-            .retain(|_, entry| !Arc::ptr_eq(&entry.cancelled, &cancelled));
         if event == "input.submit" && managed {
             let mut state = invocations.lock().map_err(|_| rejected("state_poisoned"))?;
             let mut hooks = hooks.lock().map_err(|_| rejected("state_poisoned"))?;
@@ -207,10 +203,6 @@ impl Runtime {
             if !active && !preparing && self.finish_observation(instance_id)? {
                 self.release_source_sessions(instance_id)?;
                 let observation = self.observation_metadata(instance_id)?;
-                self.expired
-                    .lock()
-                    .map_err(|_| rejected("state_poisoned"))?
-                    .retain(|_, entry| entry.instance_id != instance_id);
                 self.instances
                     .lock()
                     .map_err(|_| rejected("state_poisoned"))?
@@ -268,7 +260,6 @@ impl Runtime {
                 .and_then(Option::as_ref)
                 .filter(|instance| !instance.closing)
                 .ok_or_else(|| rejected("unknown_instance"))?;
-            self.event_execution(instance, &instance_id, &value)?;
             (
                 Arc::clone(&instance.hooks),
                 Arc::clone(&instance.hook_open),

@@ -7,7 +7,7 @@ AgentSight 观测 Agent 时不需要被嵌进 Agent 里；同样，当机器上�
 
 ## 支持的 Agent
 
-只要被发现规则命中的进程都会被追踪。随包发布的规则集（36 条）覆盖：
+只要被发现规则命中的进程都会被追踪。随包发布的规则集（35 条）覆盖：
 
 | Agent | 上报名称 |
 |---|---|
@@ -123,9 +123,9 @@ AgentSight enforcement unavailable: enforcer I/O failed: No such file or directo
 采集与分析不受影响，只是风险拦截页面和 `/api/enforcement/*` 端点会消失。需要单独启动 enforcer 守护进程。
 源码运行见[源码构建](deployment.md#源码构建)。
 
-ActPlane 策略下发支持宿主的初始 PID namespace，也支持容器的默认 PID namespace。
-当 enforcer 与目标进程共享容器 PID namespace 时，无需设置 `hostPID: true` / `--pid=host`，
-这些 host PID 部署方式仍然受支持。策略下发错误不影响采集与分析。
+ActPlane 策略下发要求 enforcer 运行在宿主的初始 PID namespace。请直接在宿主运行守护进程，
+或为容器设置 `hostPID: true` / `--pid=host`。在其他 PID namespace 中，策略下发会返回
+`unsupported_environment`；采集与分析不受影响。
 
 守护进程自身会向 journal 写日志——引擎启动、socket 监听、策略注入结果（内核步骤失败时含回滚细节）
 以及 poller 错误：
@@ -142,11 +142,11 @@ $ sudo journalctl -u agentsight-enforcer
 切换 `agent-file-guard` 的前置条件、互斥能力、维护窗口及重新 Apply 步骤，见
 [启用系统层文件防误删](deployment.md#启用系统层文件防误删)。
 
-对于同一容器内的目标，`root_pid` 保持为 procfs 显示的 namespace-local PID。enforcer 独立解析
-并校验对应的内核身份，不会通过 `NSpid` 链换算或猜测宿主 PID。当本地 PID、PID namespace、
-进程启动时间或 procfs 时钟无法校验时，包括 PID 已失效或被复用、container-uptime 时钟关系
-不一致，Apply 都会 fail-closed。启用 `agent-file-guard` profile 和 BPF-LSM 后，
-`file_delete_guard` 同样支持初始或容器默认 PID namespace。
+PID namespace 的支持边界更窄。enforcer 自身执行 map 操作时使用 BPF 捕获的
+init-namespace PID，但这不会把同一容器 procfs 中的目标 `root_pid` 转换为宿主 PID。
+目标解析仍要求 `/proc` 视图包含 init namespace 的完整 `NSpid` 链；只报告
+namespace-local ID 的容器 procfs 会在目标绑定前以 `unsupported_environment` 拒绝，
+采集与分析不受影响。`file_delete_guard` 同样仍仅限 init PID namespace。
 
 拦截能力还取决于引擎的 hook 预算：只有当引擎启动时预留了对应的 BPF LSM hook、且内核启用了
 BPF LSM（`/sys/kernel/security/lsm` 中包含 `bpf`）时，`block` 规则才能真正拒绝操作。上述不含
@@ -260,9 +260,7 @@ tool-call ID 刷新元数据，再计算结果，无需为这些视图额外调�
 这些查询复用现有 AgentSight 凭据，即使访问来自 loopback。查询会对 ID 去重，并让所有
 源请求共享 5 秒、1000 条记录/请求、8 MiB 的预算。刷新失败或超限时明确报错，不保存
 部分批次，也不将缓存行当作最新数据返回。本次源回复中不存在的记录不计入当前汇总；
-已保存的记录仍可通过记录 API 查询。未配置 `tokenless_api` 时保持现有本地数据库行为。共享配置存在
-JSON 语法错误时，`serve` 使用内嵌默认配置继续运行，但禁用 Tokenless API 集成；详见
-[配置恢复](configuration.md#改完怎么验证)。
+已保存的记录仍可通过记录 API 查询。未配置 `tokenless_api` 时保持现有本地数据库行为。
 
 历史调用 ID 继续参与复合节省计算。源查询每次最多批量匹配 128 个 ID，因此匹配统计较少的
 长会话可以完成查询，并保留早期压缩的节省量。所有批次及其分页共享同一个记录预算。

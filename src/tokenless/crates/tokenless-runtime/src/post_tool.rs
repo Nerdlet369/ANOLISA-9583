@@ -4,7 +4,6 @@ mod arbitration;
 mod content;
 mod diff;
 pub(crate) mod file_read;
-mod mixed;
 mod pipeline;
 mod stash_ledger;
 

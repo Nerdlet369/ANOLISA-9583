@@ -172,8 +172,6 @@ def _provider(
         cancel,
         0o644,
     )
-    for name in ("tokenless-openclaw", "sec-core-tokenless-openclaw"):
-        copy_file(TEMPLATES / f"{name}.json", root / "templates" / f"{name}.json", cancel, 0o644)
 
 
 def _readme(repo: Path, language: str) -> str:

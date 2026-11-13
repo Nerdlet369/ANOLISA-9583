@@ -71,7 +71,7 @@ aw status --config /absolute/aw.yaml
 aw stop --config /absolute/aw.yaml
 ```
 
-`startDaemon()` confirms daemon readiness; `createQuery()` confirms Query readiness after the SDK handshake. [Validate native behavior](../validation.md), including allow, block, Post failure and cleanup.
+`startDaemon()` confirms prewarm readiness; `createQuery()` confirms Query readiness after the SDK handshake. [Validate native behavior](../validation.md), including allow, block, Post failure and cleanup.
 For security composition, use the [SDK example](../../../../../src/aw/crates/aw-service/examples/aw.sdk-security.yaml), replace paths and start sec-core first.
 
 The shared sec-core Provider also supports [Skill validation before loading](../providers/sec-core.md#validate-skills-before-loading). Configure `check_skill` on `tool.before` for the native `Skill` tool and authorize its canonical source directories in the daemon.
@@ -91,48 +91,6 @@ Skill source: the Worker can retain dynamically discovered Skills across reloads
 With project sources enabled, later Skill checks return `skill_resolution_error`,
 including after failed/denied reads or idle policy updates. Start a new Query or
 use `settingSources: ["user"]` from Query creation for required Skill checks.
-
-## Start from the application
-
-A Node application can prepare its own AW instance and keep its normal startup
-command. Add the following once, before importing the bridge and creating a
-daemon or Query. The existing service must use the same `aw.yaml`; its `sdk`
-target must describe this application's Node executable and entrypoint.
-
-```javascript
-import { execFileSync } from "node:child_process";
-
-const instance = JSON.parse(execFileSync("aw", [
-  "instance", "prepare", "--agent", "sdk",
-], { encoding: "utf8", timeout: 30000, maxBuffer: 1048576 }));
-Object.assign(process.env, instance.environment);
-```
-
-Continue through the managed factories above. Preparation returns a pending
-instance; `startDaemon()` or initialized `createQuery()` confirms native readiness.
-Keep preparation failures fatal. Every protected Query must use the returned
-bridge, including new and resumed Queries. An application already running without
-that integration needs one restart.
-
-From the directory containing `aw.yaml`, start and inspect the application:
-
-```bash
-node /absolute/application/worker.mjs
-aw status --config aw.yaml
-aw instance update --agent sdk
-```
-
-Run the status and update commands in another terminal. Edit `aw.yaml` before
-updating; pause Query creation and close active Queries first. Multiple workers
-require `aw instance update --instance INSTANCE` to select one explicitly.
-The same resident policy, native configuration and cleanup rules apply to both
-startup modes. After closing all Queries and stopping the daemon, release the
-prepared instance in the application's `finally` block:
-
-```javascript
-execFileSync("aw", ["instance", "release", "--binding", instance.binding],
-  { encoding: "utf8", timeout: 10000 });
-```
 
 ## Native configuration
 
@@ -160,12 +118,8 @@ AW admission failures must propagate. Application entries support `.js` and `.mj
 
 Use `await bridge.startup({options})` for one-shot prewarming. It initializes without
 a prompt and checks scope validity again on `warm.query(prompt)`. Await `warm.close()`
-for an unused instance. Each warm object accepts one Query and holds its instance
-and task scope until closed; close it before an idle policy update. Follow
-[traffic readiness](../deployment/lifecycle.md#prepare-before-accepting-traffic)
-to overlap its preparation with configured input scanners. SDK/Worker files remain
-unchanged when AW starts and stops; removing AW integration means restarting
-through the application's native factories.
+for an unused instance. SDK/Worker files remain unchanged when AW starts and stops;
+removing AW integration means restarting through the application's native factories.
 
 Native in-process SDK MCP servers retain schema transforms and defaults: AW checks
 the parsed handler input, then checks the final SDK response after output validation
@@ -192,7 +146,7 @@ interfaces, which require regression checks when upgrading the SDK.
 | Permissions and input | Preserve native denial; check public Hook input. Subsequent native rewrites remain unchecked before execution. |
 | Environment and authentication | Queries sharing a daemon cannot override env/auth; use native `daemon.auth()` for credential changes or separate daemons for different credentials |
 | Post checks | Ordinary resident Queries adopt `replace_result` for one text slot via `updatedToolOutput`, including `/file/content` in native `Read` text results; file metadata remains intact and PII checks also scan the retained envelope; `withhold_result` closes delivery on check failure. Restricted `--reloadable` mode remains observation-only. |
-| AgentSight | Each acknowledged Query owns bounded callback observation and closes it with its scope. Native session/tool-call association is verified; AgentSight source process identity requires separate verification and unavailable evidence retains unknown coverage |
+| AgentSight | Ordinary resident mode requires `evidence.mode: off` |
 | Worktree | Ordinary callbacks carry parent Query cwd, so policies needing actual execution cwd cannot use worktrees; restricted mode rejects them |
 
 Cleanup waits for native Query, Hook, permission, credential and MCP callbacks to drain. Failed or timed-out private lease cleanup fences new work; fix the cause and restart the worker.

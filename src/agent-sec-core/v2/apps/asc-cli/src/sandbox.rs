@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::PathBuf;
 
-use asc_pep_runtime::PermissionInput;
+use asc_os_permission_types::OsPermissionSet;
 use clap::{Args, Subcommand};
 
 pub mod hook;
@@ -24,7 +24,7 @@ pub enum SandboxCommand {
 /// Inputs to one direct sandbox launch.
 #[derive(Debug, Args)]
 pub struct SandboxRun {
-    /// OS permission JSON or Cedar policy file.
+    /// JSON file containing an OS permission set.
     #[arg(long)]
     pub permissions: PathBuf,
     /// Target executable and arguments, following `--`.
@@ -68,8 +68,7 @@ impl SandboxCommand {
             &std::env::current_dir()?,
             target_environment()?,
         )?;
-        let result = asc_pep_runtime::SandboxBackend::installed()?
-            .execute_with_provider(launch, &permissions)?;
+        let result = asc_pep_runtime::execute(launch, permissions)?;
         exit_status(result)
     }
 }
@@ -108,7 +107,7 @@ fn exit_status(
         .ok_or_else(|| SandboxError::Execution("target did not return an exit status".into()))
 }
 
-fn read_permissions(path: &std::path::Path) -> Result<PermissionInput, SandboxError> {
+fn read_permissions(path: &std::path::Path) -> Result<OsPermissionSet, SandboxError> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(MAX_PERMISSION_BYTES + 1)
@@ -116,18 +115,12 @@ fn read_permissions(path: &std::path::Path) -> Result<PermissionInput, SandboxEr
     if bytes.len() as u64 > MAX_PERMISSION_BYTES {
         return Err(SandboxError::TooLarge);
     }
-    Ok(PermissionInput::parse(std::str::from_utf8(&bytes)?)?)
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 /// Direct sandbox input and execution failures.
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
-    /// A Cedar or JSON source could not become a permission request.
-    #[error(transparent)]
-    PermissionInput(#[from] asc_pep_runtime::permissions::PermissionInputError),
-    /// Policy source text must have a lossless UTF-8 representation.
-    #[error("sandbox permission input must be valid UTF-8: {0}")]
-    Utf8(#[from] std::str::Utf8Error),
     /// The required target was absent.
     #[error("sandbox run requires a command after --")]
     MissingCommand,

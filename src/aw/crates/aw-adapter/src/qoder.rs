@@ -16,7 +16,7 @@ use std::{
 };
 
 pub(super) struct Qoder;
-pub(crate) mod reload;
+mod reload;
 
 struct Prepared {
     input: LaunchInput,
@@ -90,7 +90,11 @@ impl Adapter for Qoder {
 
 impl PreparedLaunch for Prepared {
     fn capabilities(&self) -> Capabilities {
-        capabilities(&self.native, &self.version)
+        let mut capabilities = capabilities(&self.native, &self.version);
+        if self.input.options.reloadable {
+            capabilities.events.remove("input.submit");
+        }
+        capabilities
     }
 
     fn validate_steps(&self, steps: &[AdmittedStep]) -> Result<()> {
@@ -116,12 +120,6 @@ impl PreparedLaunch for Prepared {
         &mut self,
         context: &LaunchContext<'_>,
     ) -> Result<crate::attachment::Registration> {
-        if self.capabilities().entrypoint != "tui" {
-            return Err(
-                "running Qoder attachment requires the TUI; prepare startup Hooks for print mode"
-                    .into(),
-            );
-        }
         crate::reload::supported(&self.capabilities())?;
         let home = self
             .input

@@ -56,7 +56,7 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Paired values are bounded visible ASCII; whitespace is never silently normalized.
+/// Header and Basic carriers can only transport visible ASCII without quoting.
 pub(crate) fn validate_token_value(
     value: &str,
     field: &'static str,

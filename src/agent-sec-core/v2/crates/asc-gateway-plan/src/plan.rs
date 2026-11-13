@@ -1,21 +1,23 @@
 use std::collections::BTreeSet;
 
 use asc_credential_store::{CredentialId, ScopeId};
-pub use asc_policy_types::authoring::{HttpMethod as Method, HttpScheme as Scheme};
+pub use asc_policy_types::authoring::{
+    HttpMethod as Method, HttpScheme as Scheme, ResponseRewrite,
+};
 use asc_policy_types::identifiers::{ResourceId, Revision};
 use serde::{Deserialize, Serialize};
 
 use crate::PlanError;
-pub use asc_policy_cedar::http::CredentialPath;
-use asc_policy_cedar::http::{is_exact_host, validate_injection, validate_path};
 
-/// Format identifier carried by every compiled Cedar credential plan.
-pub const PLAN_FORMAT: &str = "agent-sec-gateway-plan/v2";
+/// Format identifier carried by every v1 plan.
+pub const PLAN_FORMAT: &str = "agent-sec-gateway-plan/v1";
 
 /// The addon loads every plan of every listener on each generation switch; bounds keep that cheap.
 const MAX_RULES: usize = 256;
 const MAX_CREDENTIALS: usize = 64;
 const MAX_BECAUSE_BYTES: usize = 256;
+const MAX_PATH_BYTES: usize = 512;
+const MAX_HOST_BYTES: usize = 253;
 
 /// Gateway rules for one Scope.
 ///
@@ -37,15 +39,12 @@ pub struct Plan {
     pub rules: Vec<Rule>,
 }
 
-/// Versioned gateway plan tag.
+/// Format tag; only v1 exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanFormat {
-    /// Legacy tag; not valid for the Cedar credential rule shape.
+    /// `agent-sec-gateway-plan/v1`.
     #[serde(rename = "agent-sec-gateway-plan/v1")]
     V1,
-    /// Cedar rules with explicit injection metadata and nullable path constraints.
-    #[serde(rename = "agent-sec-gateway-plan/v2")]
-    V2,
 }
 
 /// Immutable Policy revision contributing gateway rules.
@@ -66,7 +65,7 @@ pub struct RuleSource {
     pub policy_id: ResourceId,
     /// Source Policy revision.
     pub policy_revision: Revision,
-    /// Rule position in canonical Cedar rule-ID order, independent of SDK iteration order.
+    /// Rule position in the source Policy.
     pub rule_index: usize,
 }
 
@@ -79,13 +78,8 @@ pub struct Rule {
     /// Request facts that must all hold.
     #[serde(rename = "match")]
     pub matcher: RequestMatch,
-    /// Authentication header explicitly selected by Cedar annotations.
-    pub header: String,
-    /// `auto`, `basic`, or a single-`{fake}` template, without an implicit default.
-    pub format: String,
-    /// Rewrite echoed credentials in response headers, uncompressed bodies and trailers.
-    /// False leaves the entire response unchanged; request injection is independent.
-    pub response_rewrite: bool,
+    /// How the response to an injected request is inspected.
+    pub response_rewrite: ResponseRewrite,
     /// Operator-facing reason.
     pub because: String,
 }
@@ -98,8 +92,8 @@ pub struct RequestMatch {
     pub scheme: Scheme,
     /// Exact lowercase host.
     pub host: String,
-    /// `None` serializes as null (unrestricted); `like` retains Cedar string semantics.
-    pub path: Option<CredentialPath>,
+    /// Path pattern: `*` matches within one segment, `**` across segments.
+    pub path: String,
     /// Sorted, unique uppercase methods; CONNECT, TRACE and OPTIONS are not expressible.
     pub methods: Vec<Method>,
     /// Credential this rule injects.
@@ -120,12 +114,6 @@ impl Plan {
     /// Returns [`PlanError::Invalid`] or [`PlanError::InvalidRule`] naming the violated field.
     pub fn validate(&self) -> Result<(), PlanError> {
         let invalid = |field, reason| Err(PlanError::Invalid { field, reason });
-        if self.format != PlanFormat::V2 {
-            return invalid(
-                "format",
-                "Cedar credential rules require agent-sec-gateway-plan/v2",
-            );
-        }
         let policies = &self.policies;
         let ids: Vec<&ResourceId> = policies.iter().map(|policy| &policy.id).collect();
         if policies.is_empty() || policies.len() > 32 || !is_strictly_sorted(&ids) {
@@ -182,20 +170,9 @@ impl Rule {
         if !is_exact_host(&self.matcher.host) {
             return invalid("match.host", "must be an exact lowercase DNS name");
         }
-        if let Some(path) = &self.matcher.path {
-            validate_path(path).map_err(|reason| PlanError::InvalidRule {
-                index: position,
-                field: "match.path",
-                reason,
-            })?;
+        if !is_path_pattern(&self.matcher.path) {
+            return invalid("match.path", "must be an absolute path pattern");
         }
-        validate_injection(&self.header, &self.format).map_err(|reason| {
-            PlanError::InvalidRule {
-                index: position,
-                field: "header/format",
-                reason,
-            }
-        })?;
         if self.matcher.methods.is_empty() || !is_strictly_sorted(&self.matcher.methods) {
             return invalid("match.methods", "must be non-empty, sorted and unique");
         }
@@ -218,4 +195,37 @@ impl Rule {
 /// Sorted uniqueness keeps encodings canonical, so equal plans compare byte-equal.
 fn is_strictly_sorted<T: Ord>(values: &[T]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn is_exact_host(host: &str) -> bool {
+    let labels: Vec<&str> = host.split('.').collect();
+    host.len() <= MAX_HOST_BYTES
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
+/// Literal segments use RFC 3986 unreserved characters only, so a pattern
+/// never depends on percent-decoding or dot-segment removal.
+fn is_path_pattern(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    path.len() <= MAX_PATH_BYTES
+        && rest.split('/').all(|segment| {
+            matches!(segment, "*" | "**")
+                || (!segment.is_empty()
+                    && segment != "."
+                    && segment != ".."
+                    && segment.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                    }))
+        })
 }

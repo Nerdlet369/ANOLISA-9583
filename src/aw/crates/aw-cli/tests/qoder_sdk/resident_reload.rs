@@ -77,7 +77,7 @@ fn first_query_policy_update_preserves_launch_receipt() {
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         let expected_denial = updated_hooks.unwrap_or(initial_hooks);
         assert_eq!(result["denied"], expected_denial);
-        assert_eq!(result["receipt_hooks"], 2);
+        assert_eq!(result["receipt_hooks"], usize::from(initial_hooks));
         assert_eq!(f.root.join("executed").exists(), !expected_denial);
         assert!(f.root.join("query-closed").exists());
         assert!(f.root.join("daemon-stopped").exists());
@@ -87,18 +87,8 @@ fn first_query_policy_update_preserves_launch_receipt() {
 
 #[test]
 fn ordinary_queries_update_hooks_post_and_mcp_after_cleanup() {
-    resident_updates(false);
-}
-
-#[test]
-fn native_application_adopts_resident_policy_without_aw_run() {
-    resident_updates(true);
-}
-
-fn resident_updates(native_start: bool) {
     let f = Fixture::new();
     let mut initial = setup(&f);
-    f.observation(&mut initial, "sdk");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qoder_sdk");
     fs::copy(source.join("resident-reload.mjs"), f.root.join("app.mjs")).unwrap();
     let sdk = f.root.join("node_modules/@qoder-ai/qoder-agent-sdk/dist");
@@ -129,165 +119,10 @@ fn resident_updates(native_start: bool) {
         json!({"tools":["native:qoder-sdk:mcp__files__read"]});
     save("mcp-deny.json", &mcp);
     let service = Service::start(&f, &initial);
-    let mut command = if native_start {
-        fs::copy(
-            source.join("resident-reload.mjs"),
-            f.root.join("resident.mjs"),
-        )
-        .unwrap();
-        fs::copy(source.join("native-start.mjs"), f.root.join("app.mjs")).unwrap();
-        let mut command = Command::new(
-            initial["spec"]["agents"]["sdk"]["argv"][0]
-                .as_str()
-                .unwrap(),
-        );
-        command
-            .arg(f.root.join("app.mjs"))
-            .current_dir(&f.root)
-            .env("HOME", f.root.join("home"))
-            .env("AW_TEST_EXECUTABLE", env!("CARGO_BIN_EXE_aw"))
-            .env("AW_TEST_CONFIG", f.root.join("aw.json"))
-            .env("AW_TEST_WORKER", f.root.join("resident.mjs"));
-        command
-    } else {
-        launch(&f)
-    };
+    let mut command = launch(&f);
     command
         .env("QODER_TEST_ROOT", &f.root)
         .env("QODER_POST_CASE", "failure");
     assert_eq!(f.successful(command)["passed"], true);
     service.released(&f);
-    if native_start {
-        assert!(!fs::read_dir(f.root.join("state"))
-            .unwrap()
-            .any(|entry| entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("native-")));
-    }
-}
-
-#[test]
-fn empty_policies_capture_tool_facts_without_sight_in_both_launch_modes() {
-    for reloadable in [false, true] {
-        for failure in [false, true] {
-            let fixture = Fixture::new();
-            let mut document = setup(&fixture);
-            document["spec"]["events"] = json!({});
-            document["spec"]["providers"] = json!({});
-            let service = Service::start(&fixture, &document);
-            let mut command = launch(&fixture);
-            if reloadable {
-                let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qoder_sdk");
-                fs::copy(
-                    source.join("reload-facts.mjs"),
-                    fixture.root.join("app.mjs"),
-                )
-                .unwrap();
-                fs::copy(
-                    source.join("reload-sdk.mjs"),
-                    fixture
-                        .root
-                        .join("node_modules/@qoder-ai/qoder-agent-sdk/dist/index.js"),
-                )
-                .unwrap();
-                command.arg("--reloadable");
-            }
-            if failure {
-                command.env("QODER_FAILURE", "1");
-            }
-            assert_eq!(fixture.successful(command)["denied"], false);
-            if !reloadable {
-                assert!(fixture.root.join("executed").exists());
-            }
-            assert!(fixture.root.join("query-closed").exists());
-            let mut events = Vec::new();
-            for entry in fs::read_dir(fixture.root.join("state/journal")).unwrap() {
-                let path = entry.unwrap().path();
-                if path
-                    .extension()
-                    .is_none_or(|extension| extension != "jsonl")
-                {
-                    continue;
-                }
-                let text = fs::read_to_string(path).unwrap();
-                let initial: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
-                let event = &initial["record"]["plan"]["executionEvent"];
-                if matches!(
-                    event["data"]["name"].as_str(),
-                    Some("tool.before" | "tool.after")
-                ) {
-                    events.push(event.clone());
-                }
-            }
-            events.sort_by_key(|event| event["data"]["name"].as_str().unwrap().to_owned());
-            assert_eq!(
-                events.len(),
-                2,
-                "reloadable={reloadable}, failure={failure}: {events:?}"
-            );
-            assert_eq!(events[0]["data"]["name"], "tool.after");
-            assert_eq!(events[1]["data"]["name"], "tool.before");
-            assert_eq!(
-                events[0]["data"]["details"]["resultStatus"],
-                if failure { "error" } else { "success" }
-            );
-            assert_eq!(events[0]["data"]["subject"], events[1]["data"]["subject"]);
-            assert!(events
-                .iter()
-                .all(|event| event["data"]["association"]["status"] == "verified"));
-            service.released(&fixture);
-        }
-    }
-}
-
-#[test]
-fn native_direct_query_and_prewarm_confirm_root_readiness_and_cleanup() {
-    for prewarm_first in [false, true] {
-        native_direct_query(prewarm_first);
-    }
-}
-
-fn native_direct_query(prewarm_first: bool) {
-    let fixture = Fixture::new();
-    let mut document = setup(&fixture);
-    document["spec"]["providers"] = json!({});
-    document["spec"]["events"] = json!({});
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qoder_sdk");
-    fs::copy(
-        source.join("native-start.mjs"),
-        fixture.root.join("app.mjs"),
-    )
-    .unwrap();
-    fs::copy(
-        source.join("native-direct.mjs"),
-        fixture.root.join("direct.mjs"),
-    )
-    .unwrap();
-    let service = Service::start(&fixture, &document);
-    let mut command = Command::new(
-        document["spec"]["agents"]["sdk"]["argv"][0]
-            .as_str()
-            .unwrap(),
-    );
-    command
-        .arg(fixture.root.join("app.mjs"))
-        .current_dir(&fixture.root)
-        .env("HOME", fixture.root.join("home"))
-        .env("AW_TEST_EXECUTABLE", env!("CARGO_BIN_EXE_aw"))
-        .env("AW_TEST_CONFIG", fixture.root.join("aw.json"))
-        .env("AW_TEST_WORKER", fixture.root.join("direct.mjs"));
-    if prewarm_first {
-        command.env("QODER_PREWARM_FIRST", "1");
-    }
-    assert_eq!(fixture.successful(command)["passed"], true);
-    service.released(&fixture);
-    assert!(!fs::read_dir(fixture.root.join("state"))
-        .unwrap()
-        .any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("native-")));
 }

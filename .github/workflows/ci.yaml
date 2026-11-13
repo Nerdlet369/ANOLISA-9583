@@ -732,15 +732,14 @@ jobs:
         run: |
           cargo test --locked -p asc-daemon-client --test transport untrusted_server_is_rejected_before_request_bytes_are_sent
           cargo test --locked -p asc-cli --test health_probe nonroot_server_is_rejected_before_health_request_is_sent
-      - name: Verify actual Linux isolation as non-root and root
+      - name: Verify actual Linux isolation
         if: ${{ !cancelled() }}
         working-directory: src/agent-sec-core/linux-sandbox
         env:
           ASC_SANDBOX_INTEGRATION: '1'
         run: |
-          test "$(id -u)" -ne 0
           RUSTFLAGS="-C target-feature=+crt-static" cargo llvm-cov --locked --no-fail-fast --no-report --target x86_64-unknown-linux-gnu -- --skip bwrap_seccomp
-          sudo env ASC_SANDBOX_INTEGRATION=1 LLVM_PROFILE_FILE="$PWD/target/llvm-cov-target/root-%p-%m.profraw" "$(find target/llvm-cov-target/x86_64-unknown-linux-gnu/debug/deps -maxdepth 1 -type f -executable -name 'all-*' | head -1)" suite::strict_runtime:: --nocapture
+          sudo env ASC_SANDBOX_INTEGRATION=1 LLVM_PROFILE_FILE="$PWD/target/llvm-cov-target/root-%p-%m.profraw" "$(find target/llvm-cov-target/x86_64-unknown-linux-gnu/debug/deps -maxdepth 1 -type f -executable -name 'all-*' | head -1)" strict_runtime_enforces_write_and_read_carveouts --nocapture
           sudo chown "$(id -u):$(id -g)" target/llvm-cov-target/*.profraw
           cargo llvm-cov report --target x86_64-unknown-linux-gnu --cobertura --output-path ../rust-sandbox-coverage.xml
       - name: Build runnable CLI and helper
@@ -1119,12 +1118,6 @@ jobs:
 
       - name: Test bundled RTK integration
         run: make -C src/tokenless test-rtk-integration
-
-      - name: Test L4 benchmark offline regressions
-        run: |
-          uv venv --python 3.12 "$RUNNER_TEMP/l4-benchmark-venv"
-          uv pip install --python "$RUNNER_TEMP/l4-benchmark-venv/bin/python" pytest pydantic tiktoken
-          make -C src/tokenless test-benchmark-l4 L4_TEST_PYTHON="$RUNNER_TEMP/l4-benchmark-venv/bin/python"
 
       - name: Build and test Tokenless Python packages
         run: |

@@ -1,6 +1,5 @@
 //! Native registration for caller-owned idle processes; no Agent launch or policy execution.
 
-pub mod bootstrap;
 mod files;
 mod qoder;
 mod qwenpaw;
@@ -233,11 +232,7 @@ impl Registration {
 }
 
 fn references_owned_binding(value: &Value, groups: &Value) -> bool {
-    let binding = if groups["hooks"]["ConfigChange"].is_array() {
-        &groups["hooks"]["ConfigChange"][0]["hooks"][0]["args"][4]
-    } else {
-        &groups["hooks"]["SessionStart"][0]["hooks"][0]["args"][2]
-    };
+    let binding = &groups["hooks"]["ConfigChange"][0]["hooks"][0]["args"][4];
     fn contains(value: &Value, binding: &Value) -> bool {
         match value {
             Value::Array(values) => values.iter().any(|value| contains(value, binding)),

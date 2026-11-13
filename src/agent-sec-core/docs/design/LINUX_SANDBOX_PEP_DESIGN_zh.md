@@ -9,9 +9,9 @@
 
 ![Sandbox 授权与执行流程](assets/linux-sandbox-policy-flow.svg)
 
-PAP 管理带版本的 Cedar 策略对象，保存源码和精确 schema 引用。PDP 每次授权从 PAP 读取当前有效策略集，以单一 Cedar PolicySet 求值，匹配的 forbid 优先于 permit，最终权限受环境上限约束。`policies.cedar` 仅可作为导入导出载体；运行时不接受策略快照文件作为授权来源。
+PAP 管理带版本的 Cedar 策略对象，保存源码和精确 schema 引用。PDP 每次授权从 PAP 一起读取配置选中的基线和可选任务策略；两层分别求值，任务策略不能突破基线及环境上限。`policies.cedar` 仅可作为导入导出载体；运行时不接受策略快照文件作为授权来源。
 
-PAP CREATE/UPDATE 接受 Cedar 源码并保存版本，所有语句均有显式 principal header 的源码进入请求授权集。此集合独立于 Scope 分配记录；启动前授权、五态决策和执行回执由 PDP/PEP 实现，不要求 PAP 接管执行流程，也不把执行回执混入后端规则部署状态。
+PAP CREATE/UPDATE 接受 Cedar 源码并保存版本，PDP 按配置选择基线及可选任务策略；启动前授权、五态决策和执行回执由 PDP/PEP 实现，不要求 PAP 接管执行流程，也不把执行回执混入后端规则部署状态。
 
 本设计聚焦 sandbox 启动，首期不接入 scanner。PEP 提交当前输入与申请权限；PDP 将请求转换为 Cedar 授权查询，结合策略中的 advice 形成五态决策和有效权限。PEP 内的 Linux adaptor 将权限转换成执行计划，`linux-sandbox` 安装约束并启动目标，沙箱外 supervisor 监督执行。
 
@@ -41,32 +41,7 @@ PAP CREATE/UPDATE 接受 Cedar 源码并保存版本，所有语句均有显式 
 generate_requested_permissions(task, state, launch) → OsPermissionSet
 ```
 
-默认读取固定配置；`PermissionInput` 接受 OS permission JSON、原始 Cedar 或现有 Cedar
-source 封装，并实现 `PermissionProvider`，支持每次按任务与状态提供新文本生成申请范围。
-Cedar 输入用于生成申请时不发布到 PAP；作为授权规则使用的动态策略仍通过 PAP 管理并进入
-PDP。申请范围仍须 PDP 授权，由 PEP 在调用 evaluate 前确定并规范化路径；不新增服务，也不动态修改运行中权限。
-
-Cedar 申请转换使用共享前端及官方求值器，按字面路径和目录前缀划分有限区域。任一获准修改
-操作合并为 write（包含读和删除）；文件 program 条件按可获准程序投影为进程树权限。
-因此“允许修改但禁删”和“仅指定程序可读”不再保留操作或程序级限制，代码对应位置明确说明。
-路径排除、无条件禁止及 default deny 保留；不支持的条件、advice、主体约束和不可表示区域
-被拒绝。出现 file.exec/process.spawn 规则时只在请求 PDP 前校验初始调用，不生成后代执行限制。
-PDP 的 MODIFY/STEP_UP 改写结果由 PDP 授权，输入 Cedar 不会再独立复查；STEP_UP 仍须批准最终决定。
-
-`PermissionProvider::prepare` 为直接执行与 PDP 请求共用的绑定入口；默认实现保持原 JSON
-准备行为，Cedar 实现先捕获全部路径边界及祖先的 canonical 路径、类型、device/inode，
-包括尚未形成 OS deny 条目的排除项。只在官方 PST 中替换已支持的文件路径字面量，仍由官方
-Authorizer 求值后合并规则，不引入集合编译器。可读别名留作挂载别名；可写祖先下的别名拒绝。
-显式文件边界若有多个硬链接，在合并前拒绝，避免丢弃排除项后绕过后端已有的硬链接限制。
-对整棵子树生效的显式排除即使位于允许根之外也保留为 deny；PDP 保留请求的 deny 边界，
-PEP 拒绝丢失边界的有效权限，使后端执行前的递归硬链接检查仍然生效。包含获准子树的补集
-不生成祖先 deny，仍按默认拒绝加显式允许表示。
-Cedar 文件读写条件中的路径/程序字面量限制为 4,095 UTF-8 字节；祖先展开逐项去重，
-在分配前检查条数和 4 MiB 累计字符串预算，避免小输入通过长祖先链放大内存。
-初始程序和 cwd 的已解析路径必须与捕获结果一致，后续身份变化由现有执行检查拒绝。
-`resolve` 只提供词法预览；自定义动态 Cedar provider 应将 `prepare` 委托给当次解析的
-`PermissionInput`。路径和程序在收集时限量，区域数乘条件规模在探测前检查预算；代表路径
-使用有序集合的前缀查询，N 次候选碰撞为 O(N log N)，不反复扫描全体边界。
+默认读取固定配置，保留按任务与状态生成申请范围的接口；意图识别生成的动态策略通过 PAP 管理并进入 PDP。申请范围仍须 PDP 授权。申请范围由 PEP 在调用 evaluate 前确定并规范化路径；不新增服务，也不动态修改运行中权限。
 
 授权复用现有 daemon 通信；策略更新经现有 PAP CRUD 接入：
 
@@ -125,7 +100,7 @@ Pull 从 evaluate 开始；Push 接收已绑定动作的 Decision，进入相同
 
 版本必须受支持，默认禁止未授权的文件访问，未知字段或冲突输入拒绝。首期 `rights` 仅含 read/write，W 包含 R；只读不承诺禁止执行。W 涵盖文件修改及目录内创建、删除、重命名。deny 优先于 allow，规则顺序或更深的路径不能越过明确禁止。`execution.deny_paths` 的实施边界见下节。
 
-PDP 只转换文件精确路径、约定的目录前缀及启动时可固定的条件，有效权限不得超出申请范围、当前策略集授权范围或 `environment_permissions` 的 OS 权限上限。目录内的禁止范围和 advice 必须保留；不能用目录的一次 Allow 或当前文件枚举推导整棵子树授权。仅匹配目录本身的授权不能扩大为递归权限。依赖未来调用程序、操作类型等无法在启动时固定的限制，不能用本次启动参数代替；后端不能准确实施时返回 unsupported。
+PDP 只转换文件精确路径、约定的目录前缀及启动时可固定的条件，有效权限不得超出申请范围、策略基线或环境上限。目录内的禁止范围和 advice 必须保留；不能用目录的一次 Allow 或当前文件枚举推导整棵子树授权。仅匹配目录本身的授权不能扩大为递归权限。依赖未来调用程序、操作类型等无法在启动时固定的限制，不能用本次启动参数代替；后端不能准确实施时返回 unsupported。
 
 PEP 解析路径并绑定执行环境，将对象事实随请求交给 PDP；Linux adaptor 在实施前核验实际对象。目录通路由后端提供，不另设 POSIX 遍历 ACL。权限不改变宿主 chmod，实际操作仍受宿主 DAC 等限制。
 
@@ -176,7 +151,7 @@ Cedar 接入以 [#9298](https://github.com/agentic-os-org/ANOLISA/pull/9298) 的
 
 两者保留，可覆盖同一次调用；`file.exec` 继续支持参数，不改为纯文件 X，也不与 `process.spawn` 互作别名。PEP 只准备一份最终调用，PDP 生成两个适用视角，调用方不能通过选择 action 避开另一侧禁止规则。程序解析结果必须用于实际启动；`bash -c` 仅代表本次 shell 调用，不声称已授权每条内部命令。
 
-同一次调用的两个视角由 PDP 组合：**任一明确 forbid 或求值错误即拒绝；否则至少一个视角命中 permit 才可继续，合并全部相关 advice。** 未匹配 permit 的单个视角不另作硬拒绝；两侧均无 permit 则默认拒绝。当前请求链路在 PAP 的单一 PolicySet 中合并 permit 授权，一条 permit 不能越过另一视角的 forbid。全局限制须通过适用的 forbid 或约束全部相关 permit 表达；baseline/task 分层交集仅适用于 legacy `from_snapshot`。文件、网络及必需依赖仍须分别获准，并受申请范围和 `environment_permissions` 上限约束。
+同一次调用的两个视角由 PDP 组合：**任一明确 forbid 或求值错误即拒绝；否则至少一个视角命中 permit 才可继续，合并全部相关 advice。** 未匹配 permit 的单个视角不另作硬拒绝；两侧均无 permit 则默认拒绝。该组合在各自策略边界内完成，再满足基线上限；一条 permit 不能越过另一视角的 forbid。文件、网络及必需依赖仍须分别获准。
 
 `process.spawn` 已纳入 revision 1 schema；`file.exec` 沿用共享前端的参数约定：排除 argv[0]，将后续参数投影为 `{index, value}`，index 0 对应 argv[1]。请求转换检查参数总数、索引唯一与连续，并保持与实际启动一致。
 
@@ -278,28 +253,7 @@ CLI sandbox run → 命令 + 输入权限 ───→ 共用 Linux adaptor
 CLI 收到结果 → 返回调用方（不调用 report）
 ```
 
-daemon 的 `--authorization-config <file>` 只配置 `environment_permissions` 和 `ttl_seconds`，
-不保存策略正文或策略 ID。请求的 principal 只含可选 `agent_type`；Cosh Hook 提供 `cosh`。
-当前不认证 Agent 身份或类型，不要求 UID 登记或进程 Binding。PDP 使用固定的
-`SecCore::Subject::"request"` 作为内部实体占位；策略通过 `principal is SecCore::Subject`
-及 `principal.agent_type` 条件匹配。个人主体 ID 的授权语义留待身份机制实现后细化。
-内核 peer UID 继续用于 claim/report 的凭据归属校验，不参与策略主体选择。
-命令与权限申请由 PEP 准备，获准结果绑定到请求摘要，执行前仍核验真实目标。
-配置及祖先须由 root 管理且不可被组/其他用户写入，调整运行参数需重启。
-
-每次 evaluate 调用 PAP，在单个 SQLite 事务读取全部当前策略（上限 4096 条、16 MiB，
-超限整次失败，不截断），排除原生 JSON 与全部裸 principal header 的 Cedar 源码。
-所有语句显式约束 principal 的源码组成有效集；混合 header 在写入与读取时整份报错。
-只在条件中引用 principal 不算显式 header。PAP 保留策略 ID、revision、完整源码与精确
-schema 引用，并计算摘要；PDP 为语句 ID 添加源策略 ID 与 revision 前缀。
-缓存锁覆盖读取与加载，防止较旧快照覆盖新缓存。候选整体加载成功后才替换；失败清空缓存，
-空集替换旧缓存并默认拒绝。集合全局 forbid 优先，advice 与环境权限上限继续生效。
-创建、更新、删除和资格变化在下一次请求刷新；不撤销已接收决定或改变 Scope 固定快照。
-
-旧 `baseline_policy`/`task_policy` 配置被拒绝，不能把旧的叠加限制自动变成 permit 并集。
-库内 `from_snapshot` 保留旧分层求值语义供显式旧调用方使用；新 consumer 只调用
-`from_policy_set`。调整旧请求策略须使用显式主体 header，并将额外限制表达为 forbid 或
-收紧全部适用 permit。Scope/Binding 的选择、发现、部署与清理，以及 AgentSight 翻译限制均不变。
+daemon 的 `--authorization-config <file>` 只配置 baseline_policy、可选 task_policy、environment_permissions 和 ttl_seconds，不保存策略正文。策略由 PAP CREATE/UPDATE 校验并写入已有 SQLite；每次 evaluate 在同一事务读取所选策略的当前版本，版本未变才复用已编译 PDP。更新成功后，新授权使用新版本；策略缺失、删除或不可用于授权时失败，不沿用旧授权。已有 Scope/Binding 的固定版本不变。配置文件及祖先由 root 管理且不可被组/其他用户写入，调整选择或运行参数需重启；PEP 请求不能上传策略。
 
 `evaluate` 只返回授权结果，不在 daemon 中启动目标。PDP 在进程内依赖 `cedar-policy`，复用加载后的策略，单次求值固定同一版本。ask 在 PEP 侧等待，不占用 daemon RPC，确认后按已绑定的 STEP_UP 继续。
 
@@ -311,9 +265,7 @@ schema 引用，并计算摘要；PDP 为语句 ID 添加源策略 ID 与 revisi
 agent-sec-cli sandbox run --permissions permissions.json -- python3 agent.py
 ```
 
-`--permissions` 必填，接受第 3 节的 `OsPermissionSet` JSON 或上述 Cedar 申请输入；`--` 后是目标命令及参数。
-CLI 将输入解析或转换成 OS 权限，安装约束、运行命令并返回结果；不调用 PDP、不 ask、不上报
-PDP 回执，也不要求 Decision。安装的是转换后的粗粒度权限；缺少权限或后端无法实施时失败，不自动补权限。
+`--permissions` 必填，文件内容为第 3 节的 `OsPermissionSet`；`--` 后是目标命令及参数。CLI 校验输入，安装约束、运行命令并返回结果，不生成申请权限、不调用 PDP、不 ask、不上报 PDP 回执，也不要求 Decision。缺少权限或无法准确实施时直接失败，不自动补权限。
 
 上层 PEP 将获准的命令和 `effective_permissions` 传给同一执行入口，无须借道 CLI。直接调用 CLI 的权限由调用方提供，不代表已经 PDP 授权。两条路径共用 adaptor、supervisor 和 `linux-sandbox`；授权应用通过库接入，不新增执行 CLI 或服务。旧底层 CLI/JSON 接口继续保留。
 

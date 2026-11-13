@@ -2,9 +2,7 @@
 
 ## 一、功能概述
 
-PostTool 压缩由 Runtime 内部的 `PostToolPipeline` 编排，并按内容类型与内容来源静态派发给六个领域之一：JSON、Build Log、Tabular、Search Results 路径共享与 HTML 页面转写默认启用；Diff 上下文裁剪也默认启用，可通过 `TOKENLESS_DIFF_COMPRESSION_ENABLED=0` 关闭。JSON 压缩器只解析一次输入，先生成保留全部字段、空值和数组元素的 Compact JSON/TOON 候选。HTML 转写开启、来源不是 `file_read` 且 Stash 与恢复路径可用时，再生成把字符串值中的 HTML 就地转写为 Markdown 的嵌入内容候选（见下文“JSON 值中的嵌入内容”），整体更小时取代前者。两者中较优的无损候选同时减少字符与估算 Token 且 Token 节省率达到 15% 时直接采用。否则再生成包含 Record Reduction 或既有截断规则的 Bounded 候选，并选择更小的合法表示。Build Log 压缩器处理成功的 `command_output` 或 `file_read`，沿用 SGR 颜色清理，对已识别 pnpm 日志进行无需恢复的布局压紧，并对构建、测试和包安装日志中的常规进度进行可恢复缩减。Tabular 压缩器生成保留单元格或可恢复选取整行的 CSV/TSV 视图；Search Results 压缩器在连续行之间共享重复路径，不丢弃任何命中；Diff 裁剪只删减未修改的上下文行，元信息与改动行原样保留；HTML 转写选取 `<main>`、`role=main` 或唯一的最外层 `<article>` 作为主内容根（都不存在时为 `<body>`），只渲染该根并移除其中可枚举的非内容元素，根外节点计数后省略。这两个领域都把原文写入 Stash，只有恢复路径可用时才会执行，结果可通过 Retrieve 找回。Tool Error 保留原始输出并只追加环境诊断；`file_content` 来源与其他内容类型透传。此外还有一个默认关闭的 Mixed Content 领域：整内容
-候选全部未命中时，按显式定界的 typed region 逐段压缩混合输出（见「三、递归处理顺序」
-之后的「Mixed Content 领域」一节）。
+PostTool 压缩由 Runtime 内部的 `PostToolPipeline` 编排，并按内容类型与内容来源静态派发给六个领域之一：JSON、Build Log、Tabular、Search Results 路径共享与 HTML 页面转写默认启用；Diff 上下文裁剪也默认启用，可通过 `TOKENLESS_DIFF_COMPRESSION_ENABLED=0` 关闭。JSON 压缩器只解析一次输入，先生成保留全部字段、空值和数组元素的 Compact JSON/TOON 候选；该候选同时减少字符与估算 Token 且 Token 节省率达到 15% 时直接采用。否则再生成包含 Record Reduction 或既有截断规则的 Bounded 候选，并选择更小的合法表示。Build Log 压缩器只处理成功的 `command_output`，先清理终端控制输出，再对已识别构建与测试日志中的重复常规进度进行可恢复缩减。Tabular 压缩器生成保留单元格或可恢复选取整行的 CSV/TSV 视图；Search Results 压缩器在连续行之间共享重复路径，不丢弃任何命中；Diff 裁剪只删减未修改的上下文行，元信息与改动行原样保留；HTML 转写选取 `<main>`、`role=main` 或唯一的最外层 `<article>` 作为主内容根（都不存在时为 `<body>`），只渲染该根并移除其中可枚举的非内容元素，根外节点计数后省略。这两个领域都把原文写入 Stash，只有恢复路径可用时才会执行，结果可通过 Retrieve 找回。Tool Error 保留原始输出并只追加环境诊断；`file_content` 来源与其他内容类型透传。
 
 ## 二、压缩规则与保留约定
 
@@ -58,53 +56,27 @@ compress_value(value, depth)
 
 ### Build Log 领域
 
-`BuildLogCompressor` 识别 Cargo/rustc、pytest、unittest/Django、npm/Jest、pnpm、Go、Make/C，
-以及具有明确 Shell 边界、带编号进度词和稳定重复模板的通用日志。检测只采样首尾各 100 行、
-每端最多 32 KiB，不依赖请求中的 command；证据不足时透传。pnpm 需要完整完成行加配套进度、
-完整通知或依赖区段，或者至少三条完整进度加 `Packages:` 行；孤立关键词、加号或框线不足以识别。
+`BuildLogCompressor` 识别 Cargo/rustc、pytest、unittest/Django、npm/Jest、Go、Make/C，以及具有明确 Shell
+边界、带编号进度词和稳定重复模板的通用日志。检测只采样首尾各 100 行、总计最多 64 KiB；
+证据不足时直接透传，避免把普通 prose、源码或未知日志误判为 Build Log。
 
-处理沿用 SGR 颜色清理，然后在原始行坐标上规划互不重叠的布局替换与进度省略，一次渲染。
-布局压紧和进度缩减可同时生效，共用现有 `build_log_reduction` 标签，每次结果只报告一次。
-操作与恢复等级分别记录：
+处理先生成无损 Terminal Cleanup Candidate；有可用 Stash 且格式证据充分时，继续在清理后
+文本上生成 Progress Reduction Candidate，再选择更小的合法结果。压缩器按方言把每行分类为
+Diagnostic、Summary、Phase、Routine Progress 或 Unknown，并使用 Python、JavaScript、Java、
+Rust、Go 和 .NET Stack Trace 状态机保护完整异常区间。只有同一 Progress Family 连续至少 9
+行时才考虑缩减：保留前 2 行和后 2 行，中间每个连续遗漏区间写入一个 Stash Entry 并插入
+Retrieve Marker。Diagnostic、Summary、Phase、Unknown 和 Stack Trace 原样保留。
 
-| 操作 | 内容 | 恢复要求 |
-|---|---|---|
-| `terminal_cleanup` | 清理已有契约允许的 SGR 颜色序列 | `lossless`，无需 Stash |
-| `build_log_reduction` | pnpm 已识别通知、依赖清单和装饰条的布局压紧，以及连续常规进度中间部分的省略 | 仅布局为语义 `lossless`，无需 Stash/恢复提示，不保证全文字节可逆；包含进度省略时为 `retrievable`，要求 Stash 与恢复路径均可用 |
+方言规则只吸收可从原生输出可靠识别的语义，例如 Cargo 编译及成功测试进度、pytest verbose
+及 quiet 进度，以及 unittest/Django verbose 输出中以 `... ok` 结束的单行测试记录。
+unittest/Django 的失败、错误、跳过、预期失败和意外成功记录、最终测试汇总、数据库准备输出
+及带多行描述的测试记录完整保留。npm Warning、Make 目录边界和非普通测试结果仍保持可见；压缩器不会为了获得
+结构化输出而修改命令参数，也不采用固定行数截断。
 
-pnpm 只处理完整 LF 记录。CRLF、裸 CR、TAB、OSC、光标控制或残缺 ESC 会停用 pnpm 新转换，
-只保留既有 SGR cleanup-only 行为。进度和依赖行必须位于原始顶层列；不把脚本、引用、代码围栏
-或 Trace 中看似进度的文本提升为 pnpm 记录。扫描遇到警告、脚本头或未知正文后，保留从该处
-到结尾的完整后缀（仍沿用 SGR 清理），不靠空行或后续进度文本恢复解析。
-
-- 只拆完整、已识别的七行更新通知模板，保留三行正文及版本、链接、命令和内部空格。
-  缺边框、嵌套或额外正文不拆；内部行宽不齐本身不使模板无效。
-- 只删除原始相邻 `Packages: +N`/`Packages: -N` 后恰好 N 个同号字符的完整条形图；
-  数量、正负号保留，孤立、混合、缩放或数量不符的条形图不删。
-- `dependencies`、`devDependencies`、`optionalDependencies` 在类别内共享 `version; available`
-  列说明，保留全部包名、版本、可升级版本、正负号、顺序和重复项。无第二列仅表示原文未打印
-  available 注释。只接受完整包名/版本行；别名、路径依赖、未知注释或异常续行使整个类别保持原样。
-  类别须明确结束，且完整替换同时减少字符与估算 Token 才采用。
-
-同一 Progress Family 连续至少 9 行时才考虑缩减：保留前 2 行和后 2 行，中间每个遗漏区间
-写入一个 Stash Entry 并插入真实恢复路径的 Marker。pnpm 四个计数中任一个回退都会开启新段；
-`done`、包总数、通知、依赖类别和其他边界分隔进度，先按原始相邻关系分段，不因拆框或删条拼接。
-`done`、包总数、最终耗时和 pnpm 版本保持可见。省略正文可逐字恢复为 SGR 清理后的进度记录。
-
-其他方言仍保护 Diagnostic、Summary、Phase、Unknown 以及 Python、JavaScript、Java、Rust、Go
-和 .NET Stack Trace。Cargo 编译及成功测试进度、pytest verbose/quiet 进度、unittest/Django
-以 `... ok` 结束的单行测试记录可缩减；失败、跳过、测试汇总、数据库准备、多行描述、npm Warning
-与 Make 目录边界保持可见。不会为了压缩而修改命令参数或宿主成功/失败状态。
-
-超过 8 个遗漏区间时，在写 Stash 前放弃进度省略。每个区间计入真实恢复提示后必须同时减少字符
-与估算 Token，不用布局收益补贴省略开销。无 Stash 或 `recovery: none` 时仍可返回布局候选且零写入。
-省略不划算或写入失败时，压缩器返回布局候选及全部 tentative writes/错误计数；但 Runtime 入口
-仍将 Stash 错误提升为操作错误，宿主可能保留原输出，不能宣称此时布局已生效。
-Runtime 只执行一次全局字符/Token 仲裁和 Stash Commit/Rollback，保留 dry-run、时限与归属保护。
-Tool Error 不进入内容压缩 Pipeline，Core 保留原始工具输出并追加环境诊断信息。
-
-两种转换内部统一为 `BuildLogOperation::Reduction`，映射到现有 `AppliedOperation::BuildLogReduction`。
-Wire 保持 Protocol v2，不新增 SDK 枚举；标签简化不改变算法、`done` 边界或 Stash key。
+单个日志出现超过 8 个遗漏区间时，压缩器在写 Stash 前放弃 Reduction Candidate，防止输出被
+过多 Marker 切碎。每个区间还必须同时减少字符和估算 Token；无可用 Stash 时只允许 Terminal
+Cleanup。Runtime 最后仍只执行一次全局字符/Token 仲裁和一次 Stash Commit/Rollback。Tool Error
+不进入内容压缩 Pipeline，Core 保留原始工具输出并追加环境诊断信息。
 
 为避免两个组件依次改写同一输出，PreTool 对明确的 Cargo、pytest、npm/Jest、Go 和 Make
 构建/测试命令直接返回 `passthrough` 与 `output_optimization: "none"`，不调用 RTK；其原生输出
@@ -115,38 +87,7 @@ Core 才恢复原命令并继续原有管线；Token 估算持平不代表
 内容未变。已有改写、回执缺失或过期、旧版 RTK 及状态失败均保留旁路。原命令用于保留本地
 HTML 等文件来源保护；命令匹配可防止重试失效操作失败时误用旧回执。目前 PreTool 没有声明
 宿主 PostTool 替换与恢复能力，因此这项命令所有权选择对所有宿主一致；无法应用 Build Log
-缩减的宿主可能暂时原样接收这些命令的输出。`pnpm install` 不在本轮新增原生命令豁免范围，
-仍可能被 RTK 改写；pnpm 能力只处理按既有归属规则实际进入 PostTool 的原始内容。
-
-### Mixed Content 领域（默认关闭）
-
-通过 `TOKENLESS_MIXED_CONTENT_ENABLED` 显式开启。开启后，当一段工具输出既不是完整的
-结构化文档、也不是任何整内容候选（JSON、Build Log、Tabular、Search Results、Diff、HTML）
-能处理时，Pipeline 把它按 **typed region** 拆分处理：识别输出中显式定界的结构化片段并逐段
-压缩，周围的 prose、日志与分隔符逐字节保留。该路由只做结构性识别，不需要宿主提供任何
-语义提示，也不会从受保护的代码块中提取内容。
-
-识别的 region 类型（边界必须显式可验证）：
-
-- **Fenced code block**（``` 或 ~~~，缩进不超过 3 个空格，闭合 fence 同标记且长度不小于
-  开 fence）：info string 首词决定领域——`json` 走 JSON 压缩器，`csv`/`tsv` 走 Tabular
-  压缩器。未闭合的 fence 保护其余全部输出；info string 含反引号的反引号 fence 不构成
-  fence；未知标签（`python`、`rust` 等）的块整体受保护，其中的内容不参与识别。
-- **裸 JSON 文档**：行首（缩进不超过 3 空格）以 `{` 或 `[` 开始且括号平衡（字符串内的
-  括号、转义引号均正确处理）的完整文档。裸 CSV/TSV 没有可验证边界，不识别。
-
-每个 region 独立交给对应领域的压缩器，使用与整内容路由完全相同的配置和策略：
-压缩失败、区域无节省或压缩器拒绝时，该区域逐字节保留；某个 fenced JSON 区域选择了 TOON
-时，仅其 info word 改写为 `toon`，其余属性保留原文与顺序，保持表示元数据与实际变换
-一致。整个候选仍需通过 Pipeline 的全局字符/Token 仲裁与 savings 门禁；没有任何区域
-发生变化、未产生暂存 Stash 写入且没有 Stash 错误时直接透传；携带暂存写入的未变化候选
-进入 NoSavings 处置，让 ledger 回滚暂存行。任一区域写入 Stash 失败时，整个候选被拒绝，
-ledger 回滚本次请求的全部暂存写入，包括其他区域成功的写入，再由 Runtime 报告存储错误。
-区域识别只覆盖与
-其他领域相同的 64 KiB / 200 行检测窗口，开在窗口之外的区域逐字节保留。区域压缩产生的
-Stash 写入与可恢复性按各区域结果合并，取最弱可恢复性。
-`protect_search_output` 为真的请求（Grep 工具输出与已识别的 Shell `grep`/`rg` 命令输出）
-不进入该路由，关闭搜索路径共享也不例外；`replace_with_text` 为假的请求同样不进入。
+缩减的宿主可能暂时原样接收这些命令的输出。
 
 ## 四、集成路径
 
@@ -223,41 +164,12 @@ Hook 校验版本与 Operation，并按宿主 Capability 应用 v2 Result
 
 | ContentType | 前提 | 领域处理 | 默认 |
 |------|------|------|------|
-| `json`（含宿主强制 JSON 与包裹的结构化 JSON） | 无；字符串值中的 HTML 另需 HTML 转写开启、来源不是 `file_read`、Stash 与恢复路径可用 | `JsonCompressor`：Record Reduction、截断、Compact JSON、可选 TOON，以及字符串值中 HTML 的就地转写 | 启用 |
-| `build_log` | 来源为 `command_output` 或 `file_read` | `BuildLogCompressor`：SGR Cleanup、pnpm 无需恢复的布局压紧、Stack Trace 保护、可恢复 Progress Reduction | 启用 |
+| `json`（含宿主强制 JSON 与包裹的结构化 JSON） | 无 | `JsonCompressor`：Record Reduction、截断、Compact JSON 与可选 TOON | 启用 |
+| `build_log` | 来源为 `command_output` 或 `file_read` | `BuildLogCompressor`：Terminal Cleanup、方言分类、Stack Trace 保护、可恢复 Progress Reduction | 启用 |
 | `tabular` | 宿主支持文本替换 | `TabularCompressor`：保留全部单元格的 CSV/TSV 压紧，无收益时原样返回，不写 Stash | 启用 |
 | `search_results` | 宿主支持文本替换；已识别 `Grep` 或 Shell 搜索直接交给压缩器；其他来源中，带行号记录要求 `api_response`，纯路径列表也允许 `command_output` | `SearchResultsCompressor`：连续记录共享完整路径，或全部路径共享目录前缀，无损且无需 Stash | 启用，`TOKENLESS_SEARCH_PATH_SHARING_ENABLED=false` 关闭 |
 | `diff` | 来源为 `command_output` 或 `file_read`，宿主支持文本替换，Stash 与恢复路径可用 | Runtime `post_tool/diff.rs`：按代价裁剪未修改上下文，元信息与改动行原样保留 | 开启，`TOKENLESS_DIFF_COMPRESSION_ENABLED=0` 关闭 |
 | `html` | 来源不是 `file_read`，宿主支持文本替换，Stash 与恢复路径可用 | `HtmlExtractor`：只渲染主内容根（`<main>`、`role=main`、唯一的最外层 `<article>` 或 body），移除可枚举非内容元素（含表单控件、媒体嵌入、dialog）后转写为 Markdown，根外节点计数省略，嵌套超过 512 层不解析 | 启用，`TOKENLESS_HTML_EXTRACTION_ENABLED=false` 关闭 |
-
-**JSON 值中的嵌入内容**：`json/embedded.rs` 按节点路由字符串值，判断只看值本身，不看字段
-名。目前识别的唯一内容域是 HTML：值至少 256 个字符，以 HTML 词表中的标签、注释或
-`<!doctype html` 开头并以 `>` 结尾时，交给 `HtmlExtractor` 的片段模式。片段模式渲染整个
-body，不选择主内容根，只移除样式与注释；元素超出词表（表单字段、脚本、媒体、框架、页面框架
-元素、`link`、`del`/`sup`/`time` 等）、元素带 `hidden`、行内样式或 `<style>` 中出现外观白
-名单（`html/fragment/css.rs`）之外的声明（删除线、上下标位移、隐藏或生成内容、列表标记、保
-留换行、符号字体、负间距、文字可能溢出的固定宽高、可能盖住相邻行的行内上下内边距与边框或装
-饰线粗细、过宽的字间距，以及转义、厂商前缀、自定义属性和颜色、图片以外的 `calc()`、`var()`
-等函数这类无法判读的写法）、文字在屏幕上难以看清（`html/fragment/legibility.rs` 沿行内样
-式、表现属性、`<style>` 和浏览器默认样式推算每段文字的颜色、背景、字号与行高：与可能所处背
-景的对比度低于 1.5、位于背景图片或渐变之上、字号小于 6px 或行距小于字号一半；样式表规则和
-表格列背景视为可作用于任意元素，页面按白底 16px 黑字处理；每对文字与背景颜色只比较一次，超
-过 65,536 次不同比较时拒绝）、属性超出白名单（`data-*`、`aria-*` 标签与状态、链接和图片以
-外的 `title`、`th` 的 `abbr`、`cite` 等视图无法呈现的值；含文字的 `aria-hidden`；描述、跳
-转等 `meta`）、折叠 `details` 中的正文、有序列表编号无法复现（`start` 不是普通非负整数、空
-列表项或列表项之间的内容会让编号与浏览器不一致）、顶部以外还有整行表头、结构被压平（单元格
-内嵌套表格或换行、超深嵌套），或任何文字节点与链接、图片目标（含作为 Markdown 标题输出的
-`title`）未按浏览器绘制顺序出现在视图中时拒绝，原值保留。表格的第一个 `thead` 与 `tfoot`
-按浏览器位置分别输出在最前和最后，页面模式同样如此。源中以空白、`br`、块级元素、表格单元或
-按钮分开的相邻文字，视图中也必须以空白分开，因此任何渲染路径把 `a<br>b` 拼成 `ab` 都会被拒
-绝；`pre` 与行内代码中的 `br` 和块级元素按换行渲染。每个改写值在 JSON 转义形式下（含首行与
-恢复指令）须至少节省 16 个估算 Token，先用占位 Key 测量，通过后才写入 Stash；同一值只渲
-染、写入一次，各候选共享结果。改写值替换原字符串，字段名、类型、数字字面量和记录关联不变，
-原值可通过该值中的恢复指令逐字节取回。工作量按文档限定：值不超过 256 KiB、深度不超过 32、
-最多解析 128 个值和 2 MiB。Bounded 候选中视图超过字符串上限的值改为普通截断。所有候选的
-Stash 写入按发生顺序交给 Runtime Ledger，未出现在最终输出中的写入在 Commit 时删除，拒绝时
-回滚。响应操作为 `html_extraction`，内容类型为 `json`。新增内容域时扩展 `EmbeddedKind` 并
-复用相应领域压缩器，不新增路由流水线。
 
 Diff 与 HTML 领域要求至少节省 16 个 Token 才采用结果，其他领域至少 1 个。Diff 与 HTML
 没有可用 Stash 或宿主未声明恢复能力（例如裸 `tokenless` 不在 Shell `PATH` 中）时，即使已开启
@@ -320,7 +232,7 @@ Hermes Adapter 不再持有 200 字符门禁、JSON 检测、截断阈值、TOON
 
 Qoder 通过原生插件目录 `hooks/hooks.json` 加载 hook，并在运行时展开 `${QODER_PLUGIN_ROOT}`。插件内的 `hooks/run-hook.sh` 再从 ANOLISA adapter 目录定位共享的 `compress_response_hook.py`，无需改写 `~/.qoder/settings.json` 或将机器相关绝对路径写入插件缓存。
 
-Qoder CLI 支持对任意工具使用 `hookSpecificOutput.updatedToolOutput`，因此压缩结果会**替换**原始工具输出，`additionalContext` 只携带环境错误归因等追加信息。原生 Bash 只允许替换字符串 `stdout`，包括较短或为空的值；压缩后回填到原对象，`stderr` 和其他字段保持不变。`stdout` 缺失或不是字符串时不替换原结果，错误诊断仍可读取 `stderr`。其他可替换的结构化结果沿用 JSON 字符串返回。Bash 对象的其他字段保持原值，由 Qoder 决定其模型可见的渲染方式；字符串响应可使用更小的 TOON 文本。Marker 中的 `tokenless retrieve` 命令可以通过已有 Shell Tool 执行，成功结果原样旁路。其他不支持输出替换的 agent 才使用 `additionalContext` 回退。
+Qoder CLI 支持对任意工具使用 `hookSpecificOutput.updatedToolOutput`，因此压缩结果会**替换**原始工具输出，`additionalContext` 只携带环境错误归因等追加信息。原生 Bash 只把字符串 `stdout` 交给 Core，包括较短或为空的值；压缩后回填到原对象，`stderr` 和其他字段保持不变。其他结果形态沿用 JSON 字符串返回。Bash 对象的其他字段保持原值，由 Qoder 决定其模型可见的渲染方式；字符串响应可使用更小的 TOON 文本。Marker 中的 `tokenless retrieve` 命令可以通过已有 Shell Tool 执行，成功结果原样旁路。其他不支持输出替换的 agent 才使用 `additionalContext` 回退。
 
 这也意味着原生 Bash 对象中的独立 `stderr` 字段不再压缩或生成检索标记；Hook 返回 `{}`
 表示不替换工具结果，不表示给模型返回空文本。Qoder 1.1.78 的真实 Bash 探针中，进程的
@@ -566,7 +478,6 @@ Rust 调用方应移除 `JsonCompressionConfig.drop_nulls`、`drop_empty_fields`
 | Search Results 领域压缩器（SearchResultsCompressor） | `crates/tokenless-compressors/src/search_results.rs` |
 | HTML 领域转写器（HtmlExtractor） | `crates/tokenless-compressors/src/html.rs` |
 | Diff 上下文裁剪 | `crates/tokenless-runtime/src/post_tool/diff.rs` |
-| Mixed Content typed-region 识别与重建 | `crates/tokenless-runtime/src/post_tool/mixed.rs` |
 | PostTool Pipeline 与最终仲裁 | `crates/tokenless-runtime/src/post_tool/` |
 | Schema 压缩器（SchemaCompressor） | `crates/tokenless-schema/src/schema_compressor.rs` |
 | 内容压缩公开 API | `crates/tokenless-compressors/src/lib.rs` |

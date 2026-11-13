@@ -474,18 +474,15 @@ def bind_coordinator(coordinator):
     coordinator._aw_resident_bound = True
 
 
-def install_guard(*, build=None):
-    """Check native assembly; a supplied build keeps the caller's readiness gate installed."""
+def install_guard():
+    """Check actual native assembly even when its plugin factory swallows errors."""
     from qwenpaw.runtime.builder import AgentBuilder
     from qwenpaw.tool_calls import ToolCoordinatorMiddleware
 
     if getattr(AgentBuilder, "_aw_resident_guard", False):
-        if build is not None:
-            raise ResidentFailure("AW native assembly guard is already installed")
         return
-    managed = build is not None
     build_middlewares = AgentBuilder._build_middlewares
-    build = AgentBuilder.build if build is None else build
+    build = AgentBuilder.build
 
     @wraps(build_middlewares)
     def checked_middlewares(*args, **kwargs):
@@ -508,7 +505,5 @@ def install_guard(*, build=None):
         return agent
 
     AgentBuilder._build_middlewares = staticmethod(checked_middlewares)
-    if not managed:
-        AgentBuilder.build = checked_build
+    AgentBuilder.build = checked_build
     AgentBuilder._aw_resident_guard = True
-    return checked_build

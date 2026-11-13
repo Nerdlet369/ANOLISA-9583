@@ -18,7 +18,6 @@ sys.dont_write_bytecode = True
 
 from claude_sdk_callbacks import (
     check_callback_payloads,
-    check_input_replacement,
     check_callback_timeouts,
     check_preserved_callbacks,
 )
@@ -553,7 +552,6 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     asyncio.run(check_callback_timeouts(args.output.resolve()))
     asyncio.run(check_callback_payloads(args.output.resolve()))
-    asyncio.run(check_input_replacement(args.output.resolve()))
     asyncio.run(check_preserved_callbacks())
     worker = (
         Path(__file__).resolve().parents[1]

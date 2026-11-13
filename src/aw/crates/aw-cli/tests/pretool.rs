@@ -23,9 +23,6 @@ use support::{Fixture, Service};
 mod tool_scope;
 
 fn blocked(adapter: &str, output: &std::process::Output) -> bool {
-    if output.status.code() == Some(2) {
-        return true;
-    }
     match adapter {
         "qoder-sdk" | "qoder" | "qwenpaw" | "agentscope" | "hermes" | "claude-sdk" => {
             output.status.code() == Some(2)
@@ -182,14 +179,7 @@ print(json.dumps(reply))
             }
         }
         for entry in fs::read_dir(f.root.join("state/journal")).unwrap() {
-            let path = entry.unwrap().path();
-            if path
-                .extension()
-                .is_none_or(|extension| extension != "jsonl")
-            {
-                continue;
-            }
-            let text = fs::read_to_string(path).unwrap();
+            let text = fs::read_to_string(entry.unwrap().path()).unwrap();
             assert!(!text.contains("Retry with arguments"));
             assert!(!text.contains("rtk candidate"));
         }
@@ -205,6 +195,3 @@ print(json.dumps(reply))
         service.released(&f);
     }
 }
-
-#[path = "pretool/input_rewrite.rs"]
-mod input_rewrite;

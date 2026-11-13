@@ -48,7 +48,7 @@ on `aw-service`; tests in `aw-provider` also depend on `aw-config`; CLI integrat
 depend on `aw-cli`. The `aw` frontend calls AW configuration and local-extension APIs in-process.
 The standalone `aw-package` executable has been removed; its crate remains.
 AW CLI builds use `make -C src/aw build`; archive assembly uses
-`make -C distribution aw-packages VERSION=0.1.1 COMPONENTS='core sec-core tokenless' OUTPUT="$PWD/target/aw-packages"` and ordinary scripts under
+`make -C distribution aw-packages VERSION=0.1.0 COMPONENTS='core sec-core tokenless' OUTPUT="$PWD/target/aw-packages"` and ordinary scripts under
 `distribution/packaging/aw/`. Extension records, file verification and durable
 transactions live in the private `aw-package::store` module. Runtime file leases
 live in `aw-exec`, independently of package database access.
@@ -141,11 +141,6 @@ the service retains runtime activation and policy revisions. See the
 Native Hook scripts also run through `aw-exec`, preserving raw output and exit
 status without a Provider handshake. AgentSight is a separate optional observation
 source; read-only `aw inspect` views do not participate in Hook admission.
-Service-owned public runtime metadata persists through the same Journal even
-when Sight is disabled. Qoder SDK and QwenPaw keep metadata callbacks when no
-policy steps are configured; only explicit native outcomes become result facts.
-See [public objects](runtime/public-objects.md#runtime-production-and-projection)
-for retained identities, bounded deduplication and projection boundaries.
 
 Skill checks reuse `tool.before` and the existing opaque `event.native` extension.
 The Qoder SDK or QwenPaw Adapter supplies `aw_skill` (requested name, canonical
@@ -157,42 +152,14 @@ actual native object and rejects source changes across checking. See the
 
 ### Explicit policy updates
 
-Supported resident factories and prepared native startup install Adapter update
-boundaries; `aw run --reloadable` selects a separate restricted bridge.
-`aw instance update` and `aw update` address an existing instance and ask
-`aw-service` to prepare a new immutable Host outside the request gate, then publish it only after a final idle/revision
+Opt-in `aw run --reloadable` installs stable Adapter entrypoints. `aw update`
+addresses an existing instance and asks `aw-service` to prepare a new immutable
+Host outside the request gate, then publish it only after a final idle/revision
 check under that gate. The service retains the bootstrap identity while each
 instance owns its active policy. Native Adapters report request/tool lifetimes
 and preserve scheduling and adoption; Provider protocols and Core plan execution
 are unchanged. See [policy reload](runtime/policy-reload.md)
 for version pins, busy rejection, process association and acceptance boundaries.
-
-### Application-owned native startup
-
-`instance setup` installs explicitly selected startup assets without creating an
-instance. On native startup, the application invokes `instance prepare` as a
-direct child. The CLI reuses Adapter validation/configuration and Service
-registration, returns private bridge assets, and leaves the registration pending.
-The original owner confirms native readiness before dispatch. This preserves one
-ownership chain from the Unix peer and process start identity to the instance.
-
-Ordinary SDK factories and QwenPaw use child task Scopes. Qoder, OpenClaw and Hermes use
-admitted native root bridges, whose request and tool lifetimes fence policy
-updates. Root lifecycle calls remain owner-authenticated; native callback peers
-must belong to the owner tree. The root mode does not permit direct callbacks on
-ordinary SDK roots. Prepared Qoder TUI and print processes confirm native root
-readiness through SessionStart. External attachment to an existing Qoder TUI
-retains its boundary before the first request.
-
-The configured service identity remains fixed while each instance owns its policy
-revision. Preparing with an edited configuration validates only permitted policy
-changes before reusing that service. Cleanup releases the instance's Provider
-work and staged assets while application process ownership stays external.
-Neither startup wiring nor process discovery alone proves Ready. Provider
-protocols, Core effect admission and Host invocation remain shared.
-See [application-owned integration](../../../../../docs/developer-guide/en/aw/deployment/independent-instances.md)
-for setup, owner confirmation and rollback, and [policy updates](../../../../../docs/developer-guide/en/aw/deployment/policy-updates.md)
-for framework-specific cleanup boundaries.
 
 ### Where `aw-core` fits
 
@@ -251,7 +218,7 @@ development environment and checks.
 | Provider messages and View protocol | `aw-provider/schemas/` |
 | Provider private configuration and backend data | The concrete Provider directory |
 
-`aw-contracts/schemas/` contains only registered, tested contracts, currently 28.
+`aw-contracts/schemas/` contains only registered, tested contracts, currently 23.
 Plan, evidence and other v1 contracts remain active; the four capability profiles
 use v2 inputs and outputs. Eight unregistered capability v1 drafts had no consumers
 in this repository and were removed. Their contents remain in Git history.
@@ -301,8 +268,3 @@ Later `aw update` uses the existing idle activation gate. `install --remove`
 uses Unbind to close complete request/tool admission atomically, then removes
 owned native registration and private artifacts. External processes are neither
 launched nor signalled by this path. Ordinary `aw run` keeps child supervision.
-
-Public audit consumers use `aw audit-export` → `aw-service::audit_export` →
-`aw-core::journal::reader`. The reader pins owned storage and verifies bounded
-source chains; Service projects retained public objects without a control RPC.
-See [incremental audit reads](runtime/audit-export.md) for cursors and gaps.

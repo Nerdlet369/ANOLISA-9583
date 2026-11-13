@@ -13,7 +13,6 @@ pub mod configuration;
 pub mod projection;
 mod qoder;
 pub mod reload;
-pub mod startup;
 mod version;
 
 pub use adapter::{
@@ -93,6 +92,3 @@ fn read_file(path: impl AsRef<std::path::Path>, limit: usize) -> Result<Vec<u8>>
 
 #[cfg(test)]
 mod test_support;
-
-/// Native input replacement envelopes and callback snapshots.
-pub mod input;

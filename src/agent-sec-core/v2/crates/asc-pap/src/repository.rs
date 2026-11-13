@@ -56,13 +56,6 @@ pub trait PapRepository: Send + Sync {
     /// Rejects invalid selection sizes, missing policies, or persistence failures.
     fn current_policies(&self, ids: &[ResourceId]) -> Result<Vec<PreparedPolicy>, PapError>;
 
-    /// Reads every current policy in identity order in one consistent storage snapshot.
-    /// Never paginate or return a truncated authorization candidate.
-    ///
-    /// # Errors
-    /// Returns storage or capacity failures without a partial result.
-    fn all_current_policies(&self) -> Result<Vec<PreparedPolicy>, PapError>;
-
     /// Lists current Policy records ordered by Policy identity ascending.
     ///
     /// # Errors

@@ -137,13 +137,13 @@ fn credential_rule() -> Json {
     json!({"effect":"allow","category":"network","action":"use_credential","target":{
         "type":"http_request","credentialId":"github","scheme":"https",
         "host":"api.github.com","path":"/**","methods":["GET","HEAD","POST","PUT","PATCH","DELETE"],
-        "responseRewrite":true
+        "responseRewrite":"buffered"
     }})
 }
 
 #[test]
 fn credential_rules_round_trip_and_preserve_optional_explanations() {
-    for rewrite in [true, false] {
+    for rewrite in ["buffered", "none"] {
         let mut value = credential_rule();
         value["target"]["responseRewrite"] = json!(rewrite);
         let template = policy(&value);
@@ -155,40 +155,6 @@ fn credential_rules_round_trip_and_preserve_optional_explanations() {
         );
     }
     assert!(!policy(&rule()).uses_credentials());
-}
-
-#[test]
-fn response_rewrite_requires_a_json_boolean_without_legacy_modes_or_coercion() {
-    for invalid in [
-        json!("buffered"),
-        json!("none"),
-        json!("passthrough"),
-        json!("true"),
-        json!("false"),
-        json!(0),
-        json!(1),
-        json!(null),
-        json!([]),
-        json!({}),
-    ] {
-        let mut value = credential_rule();
-        value["target"]["responseRewrite"] = invalid.clone();
-        assert!(
-            serde_json::from_value::<PolicyTemplate>(json!({"specVersion":"0.1","rules":[value]}))
-                .is_err(),
-            "responseRewrite must reject {invalid}"
-        );
-    }
-    let mut value = credential_rule();
-    value["target"]
-        .as_object_mut()
-        .unwrap()
-        .remove("responseRewrite");
-    assert!(
-        serde_json::from_value::<PolicyTemplate>(json!({"specVersion":"0.1","rules":[value]}))
-            .is_err(),
-        "responseRewrite must be required"
-    );
 }
 
 #[test]
@@ -328,6 +294,7 @@ fn credential_targets_enforce_store_identifiers_and_gateway_matching_bounds() {
         ("scheme", json!("http")),
         ("methods", json!(["OPTIONS"])),
         ("methods", json!(["get"])),
+        ("responseRewrite", json!("passthrough")),
         ("extra", json!(true)),
     ] {
         let mut value = credential_rule();

@@ -10,7 +10,7 @@ mod observability;
 pub use observability::{ObservabilityService, ObservabilitySink, ObservabilityWriteError};
 mod action;
 mod gateway;
-pub use gateway::{GatewayAdministration, GatewayFailure, GatewayFailureKind};
+pub use gateway::{GatewayAdministration, GatewayFailure, GatewayFailureKind, GatewayKeyRequest};
 mod identity;
 pub mod intent;
 pub use action::ActionService;

@@ -50,13 +50,13 @@ macro_rules! dns_label_name {
 }
 
 dns_label_name!(
-    /// Stable opaque identifier of a managed real/fake pair.
+    /// Identifier of a managed credential, such as `github`.
     CredentialId,
     "credential id"
 );
 
 dns_label_name!(
-    /// Canonical Scope identity used for active pair membership.
+    /// Stable Scope identity, the subject a fake is issued to.
     ScopeId,
     "scope id"
 );

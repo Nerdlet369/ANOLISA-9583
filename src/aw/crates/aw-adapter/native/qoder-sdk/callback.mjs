@@ -60,14 +60,11 @@ export async function lifecycle(config, phase, key = "") {
   if (code !== 0) throw new Error(`lifecycle_${phase}_exit_${code}`);
 }
 
-/** Include CLI invocation grace (2s), cleanup (2s), and process/reply headroom (1s). */
-export function callbackTimeoutMs(hook) { return hook.budget_ms + 5000; }
-
 export async function invoke(config, hook, payload, signal) {
   const { code, stdout } = config.scope ? await config.scope.invoke(hook, payload, signal) : await execute(config,
     ["hook", "--adapter", "qoder-sdk", "--binding", config.binding,
       "--event", hook.event, "--step", hook.step, "--on-error", hook.on_error],
-    payload, signal, callbackTimeoutMs(hook));
+    payload, signal, hook.budget_ms + 3000);
   if (code === 2 && hook.event === "input.submit") {
     const reason = stdout.length ? JSON.parse(stdout.toString("utf8")) : "Input blocked by AW policy";
     if (typeof reason !== "string") throw new Error("invalid_native_response");
@@ -81,12 +78,6 @@ export async function invoke(config, hook, payload, signal) {
   }
   if (code !== 0) throw new Error(`callback_exit_${code}`);
   const value = stdout.length ? JSON.parse(stdout.toString("utf8")) : {};
-  if (hook.event === "tool.before" && payload.hook_event_name === "PreToolUse" &&
-      value && Object.keys(value).length === 1 &&
-      Object.keys(value.hookSpecificOutput ?? {}).length === 2 &&
-      value.hookSpecificOutput.hookEventName === "PreToolUse" &&
-      value.hookSpecificOutput.updatedInput && typeof value.hookSpecificOutput.updatedInput === "object" &&
-      !Array.isArray(value.hookSpecificOutput.updatedInput)) return value;
   if (hook.event === "tool.after" && hook.replace_result &&
       payload.hook_event_name === "PostToolUse" && value &&
       Object.keys(value).length === 1 && Object.keys(value.hookSpecificOutput ?? {}).length === 2 &&

@@ -1,8 +1,5 @@
 //! Reusable native hosts exercise aw run, explicit updates, callbacks and cleanup.
 
-#[path = "instance.rs"]
-mod instance;
-
 use super::support::{Fixture, Process, Service, TIMEOUT};
 use aw_service::Operation;
 use serde_json::{json, Value};
@@ -409,7 +406,7 @@ fn prewarmed_qoder_and_qwenpaw_switch_before_dispatch_without_restarting() {
 
 #[test]
 fn reload_optin_rejects_unverified_native_modes_before_starting_a_service() {
-    for option in ["--bare", "--headless-fast-hooks", "--remote"] {
+    for version in ["1.1.64", "2.0.0"] {
         let fixture = Fixture::new();
         let document = fixture.document();
         fixture.save(&document);
@@ -418,11 +415,12 @@ fn reload_optin_rejects_unverified_native_modes_before_starting_a_service() {
             .args(["run", "--config"])
             .arg(fixture.root.join("aw.json"))
             .args(["--agent", "qoder", "--reloadable"]);
-        command.args(["--", option]);
+        command
+            .env("FAKE_VERSION", version)
+            .args(["--", "-p", "unused"]);
         let output = fixture.run(command);
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr)
-            .contains(&format!("Qoder option {option} is not supported")));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("runtime policy updates require"));
         assert!(!fixture.root.join("state").exists());
         assert!(!fixture.root.join("started-one").exists());
     }

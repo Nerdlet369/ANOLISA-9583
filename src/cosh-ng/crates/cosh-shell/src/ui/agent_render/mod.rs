@@ -54,8 +54,8 @@ pub use approval_journal::{ApprovalJournalEntryModel, ApprovalJournalPanelModel}
 pub(crate) use approval_reason::{card_reason_phrase, CARD_REASON_PHRASE_MAX_WIDTH};
 pub use approval_receipt::ApprovalReceiptPanelModel;
 pub use consultation::ConsultationCardModel;
-pub(crate) use health::primary_health_prompt_suggestion;
 pub use health::HealthBannerModel;
+pub(crate) use health::{health_uses_startup_row, primary_health_prompt_suggestion};
 pub(crate) use help::{HelpPanelEntry, HelpPanelGroup, HelpPanelModel};
 pub(crate) use hook_status::{AgentHooksView, HookEntryView, HookEventGroup, HookStatusPanelModel};
 use markdown::MarkdownRenderModel;
@@ -76,7 +76,6 @@ const MAX_WIDTH: u16 = 160;
 #[derive(Debug, Clone)]
 pub struct RatatuiInlineRenderer {
     width: u16,
-    column_limit: Option<u16>,
     pub(crate) plain: bool,
     pub(crate) styled: bool,
     language: crate::Language,
@@ -85,22 +84,19 @@ pub struct RatatuiInlineRenderer {
 impl RatatuiInlineRenderer {
     pub fn for_terminal() -> Self {
         let stdout_is_tty = std::io::stdout().is_terminal() && !running_under_cargo_test();
-        let terminal_columns = if stdout_is_tty {
+        let width = if let Some(width) = configured_terminal_width() {
+            width
+        } else if stdout_is_tty {
             ratatui::crossterm::terminal::size()
-                .ok()
                 .map(|(cols, _)| cols)
-                .filter(|cols| *cols > 0)
+                .unwrap_or(DEFAULT_WIDTH)
+                .clamp(MIN_WIDTH, 200)
         } else {
-            None
-        };
-        let columns = match (configured_terminal_width(), terminal_columns) {
-            (Some(configured), Some(actual)) => Some(configured.min(actual)),
-            (configured, actual) => configured.or(actual),
+            DEFAULT_WIDTH
         };
         Self {
-            width: columns.unwrap_or(DEFAULT_WIDTH).clamp(MIN_WIDTH, 200),
-            column_limit: columns,
-            plain: plain_output_requested() || columns.is_some_and(|columns| columns < MIN_WIDTH),
+            width,
+            plain: plain_output_requested(),
             styled: stdout_is_tty && std::env::var_os("NO_COLOR").is_none(),
             language: crate::Language::EnUs,
         }
@@ -109,22 +105,15 @@ impl RatatuiInlineRenderer {
     pub fn with_width(width: u16) -> Self {
         Self {
             width: width.clamp(20, 240),
-            column_limit: None,
             plain: false,
             styled: false,
             language: crate::Language::EnUs,
         }
     }
 
-    pub(crate) fn within_columns(mut self, columns: u16) -> Self {
-        self.column_limit = Some(columns);
-        self
-    }
-
     pub fn plain_with_width(width: u16) -> Self {
         Self {
             width: width.clamp(20, 240),
-            column_limit: None,
             plain: true,
             styled: false,
             language: crate::Language::EnUs,
@@ -456,14 +445,15 @@ impl RatatuiInlineRenderer {
     }
 
     pub(crate) fn panel_standard_width(&self) -> u16 {
-        self.width
-            .clamp(MIN_WIDTH, MAX_WIDTH)
-            .min(self.column_limit.unwrap_or(MAX_WIDTH))
+        self.width.clamp(MIN_WIDTH, MAX_WIDTH)
     }
 
     fn content_width(&self) -> usize {
         let margin = if self.plain { 2 } else { 4 };
-        self.panel_standard_width().saturating_sub(margin).max(1) as usize
+        self.width
+            .clamp(MIN_WIDTH, MAX_WIDTH)
+            .saturating_sub(margin)
+            .max(20) as usize
     }
 
     fn supports_status_animation(&self) -> bool {
@@ -478,7 +468,7 @@ impl RatatuiInlineRenderer {
         }
     }
 
-    pub(crate) fn styles_enabled(&self) -> bool {
+    pub(super) fn styles_enabled(&self) -> bool {
         self.styled
     }
 }
@@ -688,11 +678,8 @@ fn configured_terminal_width() -> Option<u16> {
     std::env::var("COSH_SHELL_WIDTH")
         .ok()
         .and_then(|width| width.parse::<u16>().ok())
-        .filter(|width| *width > 0)
-        .map(|width| width.min(200))
+        .map(|width| width.clamp(MIN_WIDTH, 200))
 }
 
 #[cfg(test)]
-library_tests! {
-    mod tests;
-}
+mod tests;

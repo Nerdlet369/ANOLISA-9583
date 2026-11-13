@@ -3,9 +3,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use asc_daemon_core::{GatewayAdministration, GatewayFailure, GatewayFailureKind, PeerCredentials};
+use asc_daemon_core::{
+    GatewayAdministration, GatewayFailure, GatewayFailureKind, GatewayKeyRequest, PeerCredentials,
+};
 use asc_gateway_runtime::{
-    GatewayConfig, GatewayError, GatewayErrorKind, GatewayService, SystemHost,
+    GatewayConfig, GatewayError, GatewayErrorKind, GatewayService, KeyRequest, SystemHost,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -49,24 +51,28 @@ impl GatewayAdministration for GatewayAdapter {
         project(Ok(self.0.status(peer.uid())))
     }
 
-    fn remove_key(&self, pairid: &str) -> Result<Value, GatewayFailure> {
-        project(
-            self.0
-                .remove_key(pairid)
-                .map(|result| serde_json::json!({"pairid": result.credential})),
-        )
+    fn add_key(
+        &self,
+        peer: PeerCredentials,
+        request: GatewayKeyRequest,
+    ) -> Result<Value, GatewayFailure> {
+        project(self.0.add_key(&KeyRequest {
+            credential: request.credential,
+            secret_file: request.secret_file,
+            caller_uid: peer.uid(),
+        }))
+    }
+
+    fn remove_key(&self, credential: &str) -> Result<Value, GatewayFailure> {
+        project(self.0.remove_key(credential))
     }
 
     fn list_keys(&self) -> Result<Value, GatewayFailure> {
-        project(
-            self.0
-                .list_keys()
-                .map(|result| serde_json::json!({"pairids": result.credentials})),
-        )
+        project(self.0.list_keys())
     }
 
-    fn ca(&self, _peer: PeerCredentials) -> Result<Value, GatewayFailure> {
-        project(self.0.ca())
+    fn credentials(&self, peer: PeerCredentials, scope_id: &str) -> Result<Value, GatewayFailure> {
+        project(self.0.credentials(peer.uid(), scope_id))
     }
 }
 

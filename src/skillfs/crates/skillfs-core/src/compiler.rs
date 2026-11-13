@@ -37,8 +37,6 @@
 
 use crate::env::EnvironmentProfile;
 
-mod shell;
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -312,8 +310,7 @@ fn unquote(s: &str) -> &str {
 ///
 /// Returns a clone of the original content when no rules apply (idempotent).
 /// Each line keeps its own terminator (`\n`, `\r\n`, or none on the final
-/// line), so only the text a rule actually rewrites changes. Continuation
-/// lines stay verbatim because their command prefix may be on an earlier line.
+/// line), so only the text a rule actually rewrites changes.
 fn apply_heuristic_normalization(content: &str, env: &EnvironmentProfile) -> String {
     let has_uv = env.has_command("uv");
     let node_pm = detect_best_node_pm(env);
@@ -324,33 +321,22 @@ fn apply_heuristic_normalization(content: &str, env: &EnvironmentProfile) -> Str
     }
 
     let mut output = String::with_capacity(content.len());
-    let mut shell = shell::MultilineGuard::default();
 
     for line in content.split_inclusive('\n') {
         // Each line keeps its own terminator, so a file whose lines are not
         // rewritten comes back byte-identical (CRLF sources included).
         let (body, terminator) = split_line_terminator(line);
-        if shell.can_normalize(body) {
-            output.push_str(&normalize_line(
-                body,
-                has_uv,
-                &node_pm,
-                env.has_env("PIP_USER"),
-            ));
-        } else {
-            output.push_str(body);
-        }
+        output.push_str(&normalize_line(body, has_uv, &node_pm));
         output.push_str(terminator);
     }
 
     output
 }
 
-/// Wrappers whose default execution preserves executable lookup. Privilege
-/// wrappers (`sudo`, `doas`) may use a different PATH or identity, so the
-/// mount process's command probes cannot justify rewrites behind them.
+/// Shell tokens that may precede the command being invoked without changing
+/// what it is.
 const TRANSPARENT_PREFIXES: &[&str] = &[
-    "env", "nohup", "exec", "command", "timeout", "nice", "time", "setsid",
+    "sudo", "doas", "env", "nohup", "exec", "command", "timeout", "nice", "time", "setsid",
 ];
 
 /// Transparent prefixes that consume leading bare arguments before the
@@ -363,25 +349,34 @@ fn prefix_leading_bare_args(prefix: &str) -> usize {
     }
 }
 
-/// Options of transparent prefixes that consume a separate value token,
-/// so the value is not mistaken for the command word.
+/// Options of transparent prefixes that consume a separate value token
+/// (`sudo -u root cmd`), so the value is not mistaken for the command word.
+/// The table is per prefix: `command -p`, for example, takes no value while
+/// `env -C /tmp` consumes `/tmp`.
 fn prefix_option_consumes_value(prefix: &str, option: &str) -> bool {
     matches!(
         (prefix, option),
-        ("env", "-u" | "--unset")
+        (
+            "sudo",
+            "-u" | "-g" | "-p" | "-C" | "-R" | "-T" | "-U" | "-h"
+        ) | ("doas" | "env", "-u" | "-C")
             | ("exec", "-a")
             | ("timeout", "-s" | "-k" | "--signal" | "--kill-after")
             | ("nice", "-n" | "--adjustment")
     )
 }
 
-/// Options known to preserve executable lookup and take no separate value.
-/// `exec -c` and `command -p` change the environment or search path.
+/// Options known to take no separate value (`env -i cmd`, `command -p cmd`).
 fn prefix_option_is_valueless(prefix: &str, option: &str) -> bool {
     matches!(
         (prefix, option),
-        ("env", "-v" | "--debug")
-            | ("exec", "-l")
+        (
+            "sudo",
+            "-b" | "-e" | "-H" | "-i" | "-k" | "-K" | "-l" | "-n" | "-P" | "-s" | "-v"
+        ) | ("doas", "-n" | "-s" | "-L")
+            | ("env", "-i" | "-0" | "-v")
+            | ("exec", "-c" | "-l")
+            | ("command", "-p")
             | (
                 "timeout",
                 "--foreground" | "--preserve-status" | "-v" | "--verbose"
@@ -416,56 +411,32 @@ fn is_assignment(token: &str) -> bool {
     }
 }
 
-// Quoted, escaped or expanded names need shell evaluation to rule out PATH.
-// Keep those commands verbatim rather than probing another environment.
-fn is_non_path_variable(name: &str) -> bool {
-    !name.is_empty()
-        && name != "PATH"
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-}
-
-fn env_option_preserves_search_path(option: &str, value: Option<&str>) -> bool {
-    match option {
-        "-v" | "--debug" => true,
-        "-u" | "--unset" => value.is_some_and(is_non_path_variable),
-        _ => option
-            .strip_prefix("--unset=")
-            .or_else(|| option.strip_prefix("-u"))
-            .is_some_and(is_non_path_variable),
-    }
-}
-
 /// Whether the word starting at byte `pos` is the command being invoked on
 /// this line. It must begin at an independent shell token, and everything
 /// before it — back to the nearest unquoted command boundary (`&&`, `|`,
 /// `;`, `$(`, backtick) — may only be environment assignments (`FOO=1`),
-/// transparent execution prefixes (`env`, `nohup`, ...), possibly chained
-/// (`env FOO=1 nohup`), their options/value tokens (`env -u FOO`), and
-/// the bare arguments a prefix consumes before the command (`timeout 30`)
-/// — a word that IS such a bare argument
+/// transparent execution prefixes (`sudo`, `env`, ...), possibly chained
+/// (`sudo env FOO=1`, `env nohup`), their options/value tokens
+/// (`sudo -u root`), and the bare arguments a prefix consumes before the
+/// command (`timeout 30`) — a word that IS such a bare argument
 /// (`timeout pip ...`: the would-be duration operand, duration omitted)
 /// is not the command either, and neither is anything after a bare
 /// argument slot that a transparent prefix or an assignment filled
-/// (`timeout env pip ...`: `env` sits in the duration slot, the
+/// (`timeout sudo pip ...`: `sudo` sits in the duration slot, the
 /// invocation fails before reaching the command). An argument or
 /// subcommand of another
 /// command (`echo sudo virtualenv`, `pip install virtualenv`,
 /// `pyenv virtualenv`) is
 /// not; a match inside a larger token (`VENV_TOOL=virtualenv`) or an option
-/// value with no following token (`exec -a virtualenv id`) is not either.
+/// value with no following token (`sudo -u virtualenv id`) is not either.
 ///
 /// Quote- and escape-aware: separators inside quotes (`LABEL='a; b'`) are
 /// not boundaries, and quoted runs stay inside their token. Wrapper options
-/// are recognized in their separate-value (`env -u FOO`), attached-value
+/// are recognized in their separate-value (`sudo -u root`), attached-value
 /// (`nice -n10`, `timeout -sKILL`), self-contained `--key=value`, and
 /// end-of-options (`timeout -- 30 cmd`) forms. When the prefix ends inside
 /// an unterminated quote or escape, or hits an unrecognized option, the
 /// position cannot be determined and the caller keeps the original text.
-/// Assignments and options that change PATH or reset the environment also
-/// keep the original text: available tools were probed in the mount process's
-/// environment. Directory changes can invalidate relative PATH entries too.
-/// A privilege wrapper anywhere in the prefix also invalidates those probes,
-/// including valid nested invocations such as `timeout 30 sudo -H pip ...`.
 fn is_command_position(line: &str, pos: usize) -> bool {
     let prefix = &line[..pos];
     if let Some(last_char) = prefix.chars().next_back() {
@@ -483,16 +454,6 @@ fn is_command_position(line: &str, pos: usize) -> bool {
     let mut past_options = false; // saw `--`: no more option tokens
     let mut tokens = tokens.into_iter();
     while let Some(token) = tokens.next() {
-        // A privilege wrapper selects an unprobed environment even when
-        // nested in a valid chain such as `timeout 30 sudo -H pip install`.
-        if matches!(token, "sudo" | "doas") {
-            return false;
-        }
-        if let Some((name, _)) = token.split_once('=') {
-            if is_assignment(token) && !is_non_path_variable(name) {
-                return false;
-            }
-        }
         match chain {
             None => {
                 if is_assignment(token) {
@@ -508,30 +469,25 @@ fn is_command_position(line: &str, pos: usize) -> bool {
             Some(current) => {
                 if !past_options && token == "--" {
                     // End of the prefix's options (`timeout -- 30 cmd`,
-                    // `env -- cmd`): every later token is positional.
+                    // `sudo -- cmd`): every later token is positional.
                     past_options = true;
                     continue;
                 }
                 if !past_options && token.starts_with('-') {
                     let self_contained_long = token.starts_with("--") && token.contains('=');
-                    let mut value = None;
                     if prefix_short_option_carries_value(current, token) {
                         // `nice -n10`, `timeout -sKILL`: the value rides
                         // attached to the option, one self-contained token.
                     } else if prefix_option_consumes_value(current, token) {
-                        value = tokens.next();
-                        if value.is_none() {
+                        if tokens.next().is_none() {
                             // No value token left in the prefix: the match
                             // itself is the option's value
-                            // (`env -u virtualenv id`).
+                            // (`sudo -u virtualenv id`).
                             return false;
                         }
                     } else if !self_contained_long && !prefix_option_is_valueless(current, token) {
                         // Unrecognized option: it may or may not consume the
                         // match as its value, so the position is unknowable.
-                        return false;
-                    }
-                    if current == "env" && !env_option_preserves_search_path(token, value) {
                         return false;
                     }
                     continue;
@@ -541,7 +497,7 @@ fn is_command_position(line: &str, pos: usize) -> bool {
                     // this word BEFORE assignment or nested-prefix
                     // handling can reinterpret it. When the word landing
                     // in the slot (`timeout`'s duration) is itself a
-                    // transparent prefix or an assignment (`timeout env
+                    // transparent prefix or an assignment (`timeout sudo
                     // pip ...`, `timeout -- env pip ...`), the invocation
                     // is broken — that word can never be a valid
                     // duration, so the wrapper's command never runs and
@@ -556,10 +512,10 @@ fn is_command_position(line: &str, pos: usize) -> bool {
                     continue; // `env FOO=1 cmd`
                 }
                 if TRANSPARENT_PREFIXES.contains(&token) {
-                    chain = Some(token); // `env FOO=1 nohup ...`
+                    chain = Some(token); // `sudo env ...`, `env FOO=1 nohup ...`
                     leading_bare_args = prefix_leading_bare_args(token);
                     // A new wrapper restarts option recognition: a `--` in
-                    // an earlier layer (`env -- nice -n10 npm install`)
+                    // an earlier layer (`sudo -- nice -n10 npm install`)
                     // closed only that layer's options.
                     past_options = false;
                     continue;
@@ -760,35 +716,10 @@ fn inline_code_delimiter(prefix: &str) -> Option<usize> {
     delimiter
 }
 
-// These pip options either fail in uv or request behavior uv cannot preserve.
-// Match the whole option name, including its --option=value spelling.
-fn pip_option_requires_pip(word: &str) -> bool {
-    let option = word.split_once('=').map_or(word, |(name, _)| name);
-    matches!(
-        option,
-        "--user"
-            | "--root"
-            | "--report"
-            | "--platform"
-            | "--implementation"
-            | "--abi"
-            | "--upgrade-strategy"
-    )
-}
-
-// Inspect only this invocation's arguments, preserving quoting and command
-// boundaries in the output. An unfinished token can continue on the next line,
-// so leave it to pip as well.
+// uv has no user-site installation mode. Inspect only this invocation's
+// arguments, preserving quoting and command boundaries in the output. An
+// unfinished token can continue on the next line, so leave it to pip as well.
 fn pip_install_can_use_uv(prefix: &str, tail: &str) -> bool {
-    // uv ignores PIP_USER. Keep pip whenever the preceding shell text mentions
-    // it, including assignments, exports and wrapper arguments. Evaluating
-    // values, overrides and conditional shell state is beyond this heuristic.
-    if prefix
-        .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-        .any(|word| word == "PIP_USER")
-    {
-        return false;
-    }
     let mut word = String::new();
     let mut quote = None;
     let mut escaped = false;
@@ -811,8 +742,8 @@ fn pip_install_can_use_uv(prefix: &str, tail: &str) -> bool {
         } else {
             match ch {
                 '\'' | '"' => quote = Some(ch),
-                ';' | '|' | ')' => return !pip_option_requires_pip(&word),
-                '&' if chars.peek() != Some(&'>') => return !pip_option_requires_pip(&word),
+                ';' | '|' | ')' => return word != "--user",
+                '&' if chars.peek() != Some(&'>') => return word != "--user",
                 '#' if word.is_empty() => return true,
                 '`' => {
                     let mut length = 1;
@@ -821,14 +752,14 @@ fn pip_install_can_use_uv(prefix: &str, tail: &str) -> bool {
                         length += 1;
                     }
                     // Stop at this span, not at a later span or trailing prose.
-                    return !pip_option_requires_pip(&word) && inline_delimiter == Some(length);
+                    return word != "--user" && inline_delimiter == Some(length);
                 }
                 // Bare parentheses delimit prose; substitutions can supply
                 // unknown arguments and must retain the original installer.
                 '$' if chars.peek() == Some(&'(') => return false,
-                '(' => return !pip_option_requires_pip(&word),
+                '(' => return word != "--user",
                 '<' | '>' => {
-                    if pip_option_requires_pip(&word) || chars.peek() == Some(&'(') {
+                    if word == "--user" || chars.peek() == Some(&'(') {
                         return false;
                     }
                     word.clear();
@@ -839,7 +770,7 @@ fn pip_install_can_use_uv(prefix: &str, tail: &str) -> bool {
                     }
                 }
                 ch if ch.is_whitespace() || ch == '&' => {
-                    if pip_option_requires_pip(&word) {
+                    if word == "--user" {
                         return false;
                     }
                     word.clear();
@@ -848,7 +779,7 @@ fn pip_install_can_use_uv(prefix: &str, tail: &str) -> bool {
             }
         }
     }
-    !escaped && quote.is_none() && !pip_option_requires_pip(&word)
+    !escaped && quote.is_none() && word != "--user"
 }
 
 /// Normalize `python -m venv` / `python3 -m venv` without changing prose or
@@ -871,15 +802,13 @@ fn rewrite_python_venv_invocations(line: &str) -> String {
 }
 
 /// Apply heuristic substitutions to a single line.
-fn normalize_line(line: &str, has_uv: bool, node_pm: &str, has_pip_user: bool) -> String {
+fn normalize_line(line: &str, has_uv: bool, node_pm: &str) -> String {
     let mut result = line.to_string();
 
     if has_uv {
         // Preserve `python -m pip`: uv availability does not imply that
         // the selected interpreter can import the uv Python module.
-        if !has_pip_user {
-            result = rewrite_pip_install_invocations(&result);
-        }
+        result = rewrite_pip_install_invocations(&result);
 
         // python -m venv / python3 -m venv → uv venv — only when it is the
         // command being invoked, like the virtualenv form below.
@@ -1207,177 +1136,6 @@ Run: pip install requests
     // Heuristic normalization tests
     // -----------------------------------------------------------------------
 
-    // Check the same bytes through the mounted-read pipeline, and verify that
-    // normalization resumes immediately after each protected shell region.
-    fn assert_multiline_preserved(region: &str) {
-        let env = env_uv_pnpm();
-        for ending in ["\n", "\r\n"] {
-            let region = region.replace('\n', ending);
-            let control = format!("pip install control{ending}npm test{ending}");
-            let expected_control = format!("uv pip install control{ending}pnpm test{ending}");
-            let input = format!("{control}{region}{control}");
-            let expected = format!("{expected_control}{region}{expected_control}");
-            let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-            assert_eq!(compile(&input, &env), expected, "{input:?}");
-            assert_eq!(pipeline.run(&input), expected, "pipeline: {input:?}");
-            assert_eq!(compile(&expected, &env), expected, "idempotence");
-            assert_eq!(compile(&input, &env_linux_no_uv()), input);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_heredoc_data() {
-        for header in [
-            "cat > notes.txt <<EOF",
-            "cat <<'EOF'",
-            "cat <<\"EOF\"",
-            "cat <<E\\OF",
-            "cat <<E'OF'",
-        ] {
-            assert_multiline_preserved(&format!(
-                "{header}\npip install requests\nnpm test\npython -m venv .venv\nvirtualenv env\nEOF\n"
-            ));
-        }
-        assert_multiline_preserved("cat <<-EOF\n\tpip install requests\n\tEOF\n");
-        assert_multiline_preserved(
-            "cat <<FIRST <<'SECOND'\npip install a\nFIRST\npip install b\nSECOND\n",
-        );
-        assert_multiline_preserved("cat <<EOF \\\n> notes.txt\npip install requests\nEOF\n");
-        // Body text, including shell syntax and fence markers, is opaque.
-        assert_multiline_preserved(
-            "cat <<EOF\ncat <<OTHER\n```\necho '\npip install requests\nEOF\n",
-        );
-    }
-
-    #[test]
-    fn test_heuristic_preserves_uncertain_heredoc_headers() {
-        for header in [
-            "cat << \\\nEOF\n",
-            "cat <<- \\\n'EOF'\n",
-            "cat <<EO\\\nF\n",
-            "cat <<'EO\nF'\n",
-            "cat <<FIRST << \\\nSECOND\n",
-            "cat <<\n",
-        ] {
-            let body = format!("{header}pip install requests\nnpm test\nEOF\n");
-            // An unknown delimiter protects through EOF when no Markdown
-            // boundary can delimit the shell example.
-            let pipeline = crate::transform::TransformPipeline::directive_only(env_uv_pnpm());
-            assert_eq!(pipeline.run(&body), body, "{header:?}");
-            for fence in ["```", "~~~"] {
-                let region = format!("{fence}sh\n{body}{fence}\n");
-                assert_multiline_preserved(&region);
-            }
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_continued_arguments() {
-        for region in [
-            "echo hello \\\npip install requests\n",
-            "echo hello \\\nnpm test \\\nvirtualenv env\n",
-            "pip install \\\npip install requests\n",
-            "python -m venv \\\nvirtualenv env\n",
-            "npm install \\\nnpm test\n",
-        ] {
-            assert_multiline_preserved(region);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_multiline_quotes_and_substitutions() {
-        for region in [
-            "echo \"hello\npip install requests\n\"\n",
-            "echo 'hello\npip install requests\n'\n",
-            "echo `printf hello\npip install requests\n`\n",
-            "echo $(printf hello\npip install requests\n)\n",
-            "echo \"$(printf '%s' \"hello\npip install requests\n\")\"\n",
-            "echo \"hello\n\npip install requests\n\"; pip install tail\n",
-        ] {
-            assert_multiline_preserved(region);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_unclosed_shell_regions() {
-        for region in [
-            "cat <<EOF\npip install requests",
-            "echo \\\npip install requests",
-            "echo \"\npip install requests",
-            "echo '\npip install requests",
-            "echo `\npip install requests",
-            "echo $(\npip install requests",
-        ] {
-            let pipeline = crate::transform::TransformPipeline::directive_only(env_uv_pnpm());
-            assert_eq!(pipeline.run(region), region, "{region:?}");
-        }
-    }
-
-    #[test]
-    fn test_heuristic_heredoc_delimiters_are_exact() {
-        for region in [
-            "cat <<EOF\n EOF\nEOF \npip install requests\nEOF\n",
-            "cat <<-EOF\n EOF\npip install requests\n\tEOF\n",
-            "cat <<'pip install'\npip install requests\npip install\n",
-            "cat <<'结束'\npip install requests\n结束\n",
-            "cat <<''\npip install requests\n\n",
-            "cat <<EOF\nhello \\\nEOF\npip install requests\nEOF\n",
-            "cat <<EOF\npip install requests\nE\\\nOF\n",
-            "cat <<'EOF'\nhello \\\nEOF\n",
-        ] {
-            assert_multiline_preserved(region);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_multiline_markdown_examples() {
-        for fence in ["```", "~~~", "````"] {
-            let region = format!("{fence}sh\necho \"\npip install requests\n\"\n{fence}\n");
-            assert_multiline_preserved(&region);
-            let input = format!("{fence}sh\necho \"\n{fence}\npip install control\n");
-            let expected = input.replace("pip install control", "uv pip install control");
-            assert_eq!(compile(&input, &env_uv_pnpm()), expected);
-        }
-        assert_eq!(
-            compile(
-                "Use `echo \"` as an example.\npip install a\n",
-                &env_uv_pnpm()
-            ),
-            "Use `echo \"` as an example.\nuv pip install a\n"
-        );
-        assert_eq!(
-            compile(
-                "Don't change the example.\n```sh\npip install a\n```\n",
-                &env_uv_pnpm()
-            ),
-            "Don't change the example.\n```sh\nuv pip install a\n```\n"
-        );
-        // Quotes can begin in the middle of a shell word as well.
-        assert_multiline_preserved("echo a'b\npip install requests\n'\n");
-    }
-
-    #[test]
-    fn test_heuristic_shell_markers_in_data_do_not_start_regions() {
-        for line in [
-            "echo '<<EOF'",
-            "echo \"<<EOF\"",
-            "echo \\<\\<EOF",
-            "cat <<<EOF",
-            "# cat <<EOF and an unclosed '\\",
-            "echo done # cat <<EOF",
-            r"echo done # trailing \",
-            r"echo \\",
-            "echo $((1 << 2))",
-            "((value = 1 << 2))",
-            "echo '(unterminated prose'",
-            "Use ``echo '\"`` as an example.",
-        ] {
-            let input = format!("{line}\npip install control\n");
-            let expected = format!("{line}\nuv pip install control\n");
-            assert_eq!(compile(&input, &env_uv_pnpm()), expected, "{line}");
-        }
-    }
-
     #[test]
     fn test_heuristic_pip_to_uv_pip() {
         let env = env_darwin_uv();
@@ -1560,125 +1318,6 @@ Run: pip install requests
     }
 
     #[test]
-    fn test_heuristic_pip_preserves_pip_user_prefixes() {
-        let env = env_darwin_uv();
-        let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-        for input in [
-            "PIP_USER=1 pip install requests\n",
-            "PIP_USER='true' pip3 install requests\r\n",
-            "PIP_USER=$INSTALL_USER pip install requests",
-            "env PIP_USER=1 timeout 30 pip install requests\n",
-            "env 'PIP_USER=1' pip install requests\n",
-            "export PIP_USER=1; pip install requests\n",
-            "export PIP_USER=yes && pip3 install requests\n",
-            "PIP_USER=1; export PIP_USER; pip install requests\n",
-            "Run: PIP_USER=1 pip install requests\n",
-            "`PIP_USER=1 pip install requests`\n",
-            // Preserve uncertain shell state rather than evaluating overrides.
-            "PIP_USER=0 pip install requests\n",
-            "export PIP_USER=1; unset PIP_USER; pip install requests\n",
-        ] {
-            assert_eq!(compile(input, &env), input, "{input}");
-            assert_eq!(pipeline.run(input), input, "read-time pipeline: {input}");
-        }
-        for (input, expected) in [
-            (
-                "pip install a; export PIP_USER=1; pip3 install b\n",
-                "uv pip install a; export PIP_USER=1; pip3 install b\n",
-            ),
-            (
-                "OTHER_PIP_USER=1 pip install requests\n",
-                "OTHER_PIP_USER=1 uv pip install requests\n",
-            ),
-        ] {
-            assert_eq!(compile(input, &env), expected);
-            assert_eq!(compile(expected, &env), expected);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_pip_preserves_pip_user_environment() {
-        let input = "pip install requests\r\nRun: pip3 install pandas";
-        for value in ["1", "true", "yes", "0", "", "$INSTALL_USER"] {
-            let mut env = env_darwin_uv();
-            env.env_vars.insert("PIP_USER".into(), value.into());
-            assert_eq!(compile(input, &env), input, "PIP_USER={value}");
-            let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-            assert_eq!(pipeline.run(input), input, "PIP_USER={value}");
-            // PIP_USER only constrains pip normalization.
-            assert_eq!(compile("python -m venv .venv\n", &env), "uv venv .venv\n");
-        }
-        let mut env = env_node_pnpm();
-        env.env_vars.insert("PIP_USER".into(), "1".into());
-        assert_eq!(compile("npm install\n", &env), "pnpm install\n");
-    }
-
-    #[test]
-    fn test_heuristic_pip_preserves_pip_only_options() {
-        let env = env_darwin_uv();
-        let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-        for option in [
-            "--root",
-            "--report",
-            "--platform",
-            "--implementation",
-            "--abi",
-            "--upgrade-strategy",
-        ] {
-            for input in [
-                format!("pip install {option} value requests\n"),
-                format!("pip3 install requests {option}=value"),
-                format!("sudo pip install '{option}=value' requests\r\n"),
-                format!("pip install requests 2>&1 {option} value\n"),
-                format!("Run: pip install requests {option}=value\n"),
-                format!("Use `pip install requests {option}=value` now\n"),
-            ] {
-                assert_eq!(compile(&input, &env), input, "{input}");
-                assert_eq!(pipeline.run(&input), input, "read-time pipeline: {input}");
-                assert_eq!(compile(&input, &env_linux_no_uv()), input);
-            }
-        }
-        for (input, expected) in [
-            (
-                "pip install --root=/tmp a && pip3 install b\n",
-                "pip install --root=/tmp a && uv pip install b\n",
-            ),
-            (
-                "pip install a; pip3 install b --root /tmp\n",
-                "uv pip install a; pip3 install b --root /tmp\n",
-            ),
-            (
-                "pip install a | echo --root /tmp",
-                "uv pip install a | echo --root /tmp",
-            ),
-            (
-                "pip install a # --root /tmp",
-                "uv pip install a # --root /tmp",
-            ),
-            (
-                "pip install './--root=example'",
-                "uv pip install './--root=example'",
-            ),
-            (
-                "pip install --rooted-package",
-                "uv pip install --rooted-package",
-            ),
-            (
-                "pip install --root>log /tmp a",
-                "pip install --root>log /tmp a",
-            ),
-            (
-                "Use `pip install a` then `pip install --root=/tmp b`.",
-                "Use `uv pip install a` then `pip install --root=/tmp b`.",
-            ),
-        ] {
-            assert_eq!(compile(input, &env), expected, "{input}");
-            assert_eq!(pipeline.run(input), expected, "read-time pipeline: {input}");
-            assert_eq!(compile(expected, &env), expected, "idempotence: {input}");
-        }
-    }
-
-    #[test]
     fn test_heuristic_pip_user_install_command_boundaries() {
         let env = env_darwin_uv();
         let input = concat!(
@@ -1733,186 +1372,6 @@ Run: pip install requests
     }
 
     #[test]
-    fn test_heuristic_continued_wrappers_stay_verbatim() {
-        let env = env_uv_pnpm();
-        let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-        for newline in ["\n", "\r\n"] {
-            for prefix in [
-                "env -i",
-                "env -u PATH",
-                "env PATH=/usr/bin",
-                "sudo",
-                "sudo -H",
-                "doas",
-                "env FOO=1",
-            ] {
-                for command in [
-                    "pip install requests",
-                    "pip3 install requests",
-                    "python -m venv .venv",
-                    "python3 -m venv .venv",
-                    "virtualenv .venv",
-                    "npm install",
-                    "npm run build",
-                    "npm test",
-                ] {
-                    let input = format!("{prefix} \\{newline}  {command}{newline}pip install next");
-                    let expected =
-                        format!("{prefix} \\{newline}  {command}{newline}uv pip install next");
-                    assert_eq!(compile(&input, &env), expected, "{input}");
-                    assert_eq!(
-                        pipeline.run(&input),
-                        expected,
-                        "read-time pipeline: {input}"
-                    );
-                    assert_eq!(compile(&expected, &env), expected, "idempotence: {input}");
-                }
-            }
-            let input = format!(
-                "sudo \\{newline}  env \\{newline}  pip install requests && npm test{newline}npm test"
-            );
-            let expected = format!(
-                "sudo \\{newline}  env \\{newline}  pip install requests && npm test{newline}pnpm test"
-            );
-            assert_eq!(compile(&input, &env), expected);
-        }
-    }
-
-    #[test]
-    fn test_heuristic_continuation_backslash_parity() {
-        let env = env_uv_pnpm();
-        for newline in ["\n", "\r\n"] {
-            for count in 1..=4 {
-                let slashes = "\\".repeat(count);
-                let input = format!("printf x {slashes}{newline}  pip install requests");
-                let command = if count % 2 == 0 {
-                    "uv pip install requests"
-                } else {
-                    "pip install requests"
-                };
-                let expected = format!("printf x {slashes}{newline}  {command}");
-                assert_eq!(compile(&input, &env), expected, "{input}");
-            }
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_changed_command_environments() {
-        let env = env_uv_pnpm();
-        let pipeline = crate::transform::TransformPipeline::directive_only(env.clone());
-        for prefix in [
-            "sudo",
-            "sudo -H",
-            "sudo -u root",
-            "sudo --",
-            "doas",
-            "env -i",
-            "env --ignore-environment",
-            "env -",
-            "env -u PATH",
-            "env -uPATH",
-            "env --unset PATH",
-            "env --unset=PATH",
-            "env -u 'PATH'",
-            "env --unset=\"PATH\"",
-            "PATH=/usr/bin",
-            "env PATH=/usr/bin",
-            "env -- PATH=/usr/bin",
-            "env 'PATH'=/usr/bin",
-            "env \"PATH=/usr/bin\"",
-            "env P\\ATH=/usr/bin",
-            "env -C /tmp",
-            "env --chdir=/tmp",
-            "exec -c",
-            "command -p",
-            "timeout 30 sudo -H",
-            "env FOO=1 doas",
-            "nice env -i",
-            "env -i env FOO=1",
-            "timeout -- 30 env -u PATH",
-        ] {
-            for command in [
-                "pip install requests",
-                "pip3 install requests",
-                "python -m venv .venv",
-                "python3 -m venv .venv",
-                "virtualenv .venv",
-                "npm install",
-                "npm run build",
-                "npm test",
-            ] {
-                let input = format!("{prefix} {command}\r\n");
-                assert_eq!(compile(&input, &env), input, "{input}");
-                assert_eq!(pipeline.run(&input), input, "read-time pipeline: {input}");
-            }
-        }
-    }
-
-    #[test]
-    fn test_heuristic_preserves_search_path_through_safe_prefixes() {
-        let env = env_uv_pnpm();
-        for prefix in [
-            "env",
-            "env FOO=1",
-            "env -- FOO=1",
-            "env -v",
-            "env --debug",
-            "env -u FOO",
-            "env -uFOO",
-            "env --unset FOO",
-            "env --unset=FOO",
-            "env LABEL='PATH=/tmp; sudo'",
-            "exec -a PATH",
-            "command",
-            "timeout 30 env FOO=1 nice -n10",
-            "nohup",
-            "setsid --wait",
-        ] {
-            for (command, replacement) in [
-                ("pip install requests", "uv pip install requests"),
-                ("python3 -m venv .venv", "uv venv .venv"),
-                ("virtualenv .venv", "uv venv .venv"),
-                ("npm install", "pnpm install"),
-            ] {
-                let input = format!("{prefix} {command}\n");
-                let expected = format!("{prefix} {replacement}\n");
-                assert_eq!(compile(&input, &env), expected, "{input}");
-                assert_eq!(compile(&expected, &env), expected, "idempotence: {input}");
-            }
-        }
-    }
-
-    #[test]
-    fn test_heuristic_environment_changes_are_command_local() {
-        let env = env_uv_pnpm();
-        for (input, expected) in [
-            (
-                "env -i pip install a && pip3 install b",
-                "env -i pip install a && uv pip install b",
-            ),
-            (
-                "pip install a; sudo -H pip install b",
-                "uv pip install a; sudo -H pip install b",
-            ),
-            (
-                "env PATH=/usr/bin npm test | npm run build",
-                "env PATH=/usr/bin npm test | pnpm run build",
-            ),
-            (
-                "Run: env -u PATH pip install a",
-                "Run: env -u PATH pip install a",
-            ),
-            (
-                "Use `sudo pip install a` then `pip install b`.",
-                "Use `sudo pip install a` then `uv pip install b`.",
-            ),
-        ] {
-            assert_eq!(compile(input, &env), expected, "{input}");
-            assert_eq!(compile(expected, &env), expected, "idempotence: {input}");
-        }
-    }
-
-    #[test]
     fn test_heuristic_pip_respects_prefix_options_and_quoting() {
         let env = env_darwin_uv();
         let input = concat!(
@@ -1925,7 +1384,7 @@ Run: pip install requests
             "pip install requests; pip3 install pandas\n",
         );
         let expected = concat!(
-            "sudo -u root pip install requests\n",
+            "sudo -u root uv pip install requests\n",
             "env FOO=1 nohup uv pip install requests\n",
             "sudo -u pip install requests\n",
             "env -C pip install requests\n",
@@ -1981,7 +1440,7 @@ Run: pip install requests
             "nice uv pip install requests\n",
             "time uv pip install requests\n",
             "setsid uv pip install requests\n",
-            "sudo timeout 30 pip install requests\n",
+            "sudo timeout 30 uv pip install requests\n",
             "env FOO=1 timeout 30 uv pip install requests\n",
             "TIME=5 timeout 30 uv pip install requests\n",
             "timeout --foreground 30 uv pip install requests\n",
@@ -2064,10 +1523,10 @@ Run: pip install requests
     fn timeout_duration_slot_filled_by_wrapper_word_stays_verbatim() {
         // Review fix on top of the unspent-credit rule: with the duration
         // operand omitted, the word landing in timeout's duration slot can
-        // itself be a listed transparent prefix — `timeout env pip
-        // install requests` (also `timeout -- env ...`). The prefix walk
+        // itself be a listed transparent prefix — `timeout sudo pip
+        // install requests` (also `timeout -- sudo ...`). The prefix walk
         // used to recognize that word as an inner wrapper, reset the
-        // credit, and rewrite the later command (`timeout env uv pip
+        // credit, and rewrite the later command (`timeout sudo uv pip
         // install requests`). But that word IS the duration operand: the
         // invocation fails before reaching the command, so no position on
         // the line is rewritable and the text must stay verbatim.
@@ -2079,15 +1538,15 @@ Run: pip install requests
             "timeout FOO=1 pip install requests\n",
         );
         assert_eq!(compile(unchanged, &env), unchanged);
-        // A genuine duration allows rewriting, while an inner privilege
-        // wrapper still selects an unprobed environment.
+        // Controls: a genuine duration operand keeps the command
+        // rewriting, alone or ahead of a real inner wrapper chain.
         assert_eq!(
             compile("timeout 30 pip install requests\n", &env),
             "timeout 30 uv pip install requests\n"
         );
         assert_eq!(
             compile("timeout 30 sudo pip install requests\n", &env),
-            "timeout 30 sudo pip install requests\n"
+            "timeout 30 sudo uv pip install requests\n"
         );
     }
 
@@ -2162,11 +1621,11 @@ Run: pip install requests
         // command after it rewrites as in the single-wrapper forms.
         let env = env_node_pnpm();
         let input = concat!(
-            "env -- nice -n10 npm install\n",
+            "sudo -- nice -n10 npm install\n",
             "timeout -- 30 nice -n10 npm install\n",
         );
         let expected = concat!(
-            "env -- nice -n10 pnpm install\n",
+            "sudo -- nice -n10 pnpm install\n",
             "timeout -- 30 nice -n10 pnpm install\n",
         );
         let result = compile(input, &env);
@@ -2240,7 +1699,7 @@ Run: pip install requests
         let expected = concat!(
             "uv venv .venv\n",
             "uv venv /opt/venv\n",
-            "sudo python3 -m venv /opt/venv\n",
+            "sudo uv venv /opt/venv\n",
             "cd /tmp && uv venv .venv\n",
             "env FOO=1 uv venv .venv\n",
             "uv venv a && uv venv b\n",
@@ -2289,13 +1748,13 @@ Run: pip install requests
         // Boundary cases from the #3525 review: a bare word in front of the
         // prefix chain (`echo sudo`), an assignment whose value contains the
         // match, and a prefix option consuming a separate value token.
-        let content = "echo sudo virtualenv myenv\nVENV_TOOL=virtualenv make\nexec -a custom virtualenv myenv\nenv FOO=1 virtualenv myenv\n";
+        let content = "echo sudo virtualenv myenv\nVENV_TOOL=virtualenv make\nsudo -u root virtualenv myenv\nenv FOO=1 virtualenv myenv\n";
         let compiled = compile(content, &env);
         let lines: Vec<&str> = compiled.lines().collect();
         assert_eq!(lines[0], "echo sudo virtualenv myenv");
         assert_eq!(lines[1], "VENV_TOOL=virtualenv make");
         assert_eq!(
-            lines[2], "exec -a custom uv venv myenv",
+            lines[2], "sudo -u root uv venv myenv",
             "prefix option values are walked past"
         );
         assert_eq!(
@@ -2308,15 +1767,16 @@ Run: pip install requests
     fn test_heuristic_virtualenv_option_values_vs_command_position() {
         let env = env_darwin_uv();
         // #3525 review follow-up: an option value with no following token is
-        // the match itself (`exec -a virtualenv id` uses it as argv[0]).
-        // A search-path override (`command -p`) stays verbatim as well.
-        let content = "exec -a virtualenv id\ncommand -p python virtualenv myenv\nenv -u FOO env BAR=1 virtualenv .venv\nenv FOO=1 nohup virtualenv .venv\n";
+        // the match itself (`sudo -u virtualenv id` — virtualenv is the
+        // username), and `command -p` consumes no value, so `python` stays
+        // the command word and `virtualenv` its argument.
+        let content = "sudo -u virtualenv id\ncommand -p python virtualenv myenv\nsudo env FOO=1 virtualenv .venv\nenv FOO=1 nohup virtualenv .venv\n";
         let compiled = compile(content, &env);
         let lines: Vec<&str> = compiled.lines().collect();
-        assert_eq!(lines[0], "exec -a virtualenv id");
+        assert_eq!(lines[0], "sudo -u virtualenv id");
         assert_eq!(lines[1], "command -p python virtualenv myenv");
         assert_eq!(
-            lines[2], "env -u FOO env BAR=1 uv venv .venv",
+            lines[2], "sudo env FOO=1 uv venv .venv",
             "chained prefixes rewrite"
         );
         assert_eq!(
@@ -2371,19 +1831,19 @@ Run: pip install requests
         );
         assert_eq!(
             lines[3], "env -C virtualenv python app.py",
-            "a directory-changing wrapper stays verbatim"
+            "-C consumes the match as its value"
         );
         assert_eq!(
             lines[4], "exec -a virtualenv python app.py",
             "-a consumes the match as its argv[0]"
         );
         assert_eq!(
-            lines[5], "env -C /tmp virtualenv .venv",
-            "a directory change can invalidate relative PATH entries"
+            lines[5], "env -C /tmp uv venv .venv",
+            "after a known value option the real command is rewritten"
         );
         assert_eq!(
             lines[6], "sudo --preserve-env virtualenv x",
-            "a privilege wrapper stays verbatim"
+            "an unrecognized option fails closed"
         );
     }
 
@@ -2399,8 +1859,8 @@ Run: pip install requests
         assert_eq!(lines[1], "pyenv virtualenv myenv");
         assert_eq!(lines[2], "uv pip install virtualenv");
         assert_eq!(
-            lines[3], "sudo virtualenv myenv",
-            "the privileged environment was not probed"
+            lines[3], "sudo uv venv myenv",
+            "sudo-prefixed command is rewritten in place"
         );
         assert_eq!(lines[4], "uv venv myenv");
     }

@@ -17,36 +17,6 @@ pub trait PermissionProvider {
     /// # Errors
     /// Returns an error when no valid permission request can be prepared.
     fn permissions(&self, launch: &LaunchSpec) -> Result<OsPermissionSet, PepError>;
-
-    /// Binds source constraints before permissions can reach either execution or the PDP.
-    ///
-    /// # Errors
-    /// Rejects invalid permissions, unresolved objects and changed source constraints.
-    fn prepare(&self, launch: &LaunchSpec) -> Result<ExecutionSpec, PepError> {
-        let permissions = self.permissions(launch)?;
-        let path_facts = prepare_path_facts(launch, &permissions, &[])?;
-        self.validate_path_facts(launch, &permissions, &path_facts)?;
-        Ok(ExecutionSpec {
-            version: 1,
-            launch: launch.clone(),
-            permissions,
-            path_facts,
-            mount_aliases: Vec::new(),
-        })
-    }
-
-    /// Checks source-specific constraints against the same object facts retained for execution.
-    ///
-    /// # Errors
-    /// Rejects facts that would widen the prepared permission source.
-    fn validate_path_facts(
-        &self,
-        _launch: &LaunchSpec,
-        _permissions: &OsPermissionSet,
-        _facts: &[PathFact],
-    ) -> Result<(), PepError> {
-        Ok(())
-    }
 }
 
 /// Default provider for an explicit fixed permission set.
@@ -147,9 +117,8 @@ impl PreparedInvocation {
             Path::new(&launch.cwd),
             launch.env,
         )?;
-        let prepared = provider.prepare(&launch)?;
-        let mut permissions = prepared.permissions;
-        let path_facts = prepared.path_facts;
+        let mut permissions = provider.permissions(&launch)?;
+        let path_facts = prepare_path_facts(&launch, &permissions, &[])?;
         let mount_aliases = permissions
             .filesystem
             .rules
@@ -161,7 +130,6 @@ impl PreparedInvocation {
                     .any(|f| f.path == rule.path && f.path != f.canonical_path)
             })
             .map(|rule| rule.path.clone())
-            .chain(prepared.mount_aliases)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -513,26 +481,6 @@ fn verify_ceiling(
             return Err(PepError::Authorization(
                 "effective permissions removed requested noexec".into(),
             ));
-        }
-    }
-    for denied in requested
-        .filesystem
-        .rules
-        .iter()
-        .filter(|rule| rule.effect == RuleEffect::Deny)
-    {
-        // Logical default-deny equivalence does not preserve hardlink checks.
-        if !denied.rights.iter().all(|right| {
-            effective.filesystem.rules.iter().any(|rule| {
-                rule.effect == RuleEffect::Deny
-                    && rule.path == denied.path
-                    && (rule.rights.contains(right) || rule.rights.contains(&FileRight::Read))
-            })
-        }) {
-            return Err(PepError::Authorization(format!(
-                "effective permissions removed requested exclusion at {}",
-                denied.path
-            )));
         }
     }
     let kinds: BTreeMap<_, _> = facts

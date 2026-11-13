@@ -14,7 +14,6 @@
 | --- | --- |
 | 配置 | [配置](configuration/configuration.md) · [编辑与原生来源](configuration/configuration-editing.md) |
 | 策略准入 | [Core 准入](core-admission.md) |
-| 原生启动归属 | [登记与任务/根桥接](architecture.md#业务自管原生启动) · [业务集成](../../../../../docs/developer-guide/zh/aw/deployment/independent-instances.md) |
 | 原生接线 | [Adapter 分派](adapters/adapter-dispatch.md) |
 | 运行时 | [本地服务](runtime/local-service.md) · [策略更新](runtime/policy-reload.md) · [Provider Host](runtime/provider-host.md) · [有界执行](runtime/bounded-execution.md) |
 | 能力计划 | [Core 执行](core-execution.md) |
@@ -36,9 +35,7 @@
 
 ## 证据与观测
 
-[公共运行与审计对象](runtime/public-objects.md) · [审计增量读取](runtime/audit-export.md)
-
-服务独立于 Sight 捕获公共元数据，按保留的来源身份和创建时间逐条投影已验证的 Journal 记录。
+[公共运行与审计对象](runtime/public-objects.md)
 
 [来源连接器](integrations/agentsight/agentsight-readonly.md) · [证据上下文](runtime/evidence-context.md) · [集成规划](integrations/agentsight/agentsight-integration.md)
 

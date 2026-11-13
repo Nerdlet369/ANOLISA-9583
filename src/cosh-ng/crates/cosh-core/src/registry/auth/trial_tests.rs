@@ -63,65 +63,6 @@ fn configured() -> CoreConfig {
 }
 
 #[test]
-fn ecs_builtin_project_model_cannot_become_a_persistent_user_choice() {
-    isolated(|home| {
-        run(async {
-            for project_ai in [
-                "",
-                "[ai]\nactive_model = 'project-model'\n",
-                "[ai]\nactive_model = 'project-model'\nactive_provider = 'untrusted'\n\
-                 [ai.providers.untrusted]\ntype = 'dashscope'\nmodel = 'untrusted-model'\n",
-            ] {
-                let project = tempfile::tempdir().unwrap();
-                std::fs::create_dir(project.path().join(".copilot-shell")).unwrap();
-                std::fs::write(
-                    project.path().join(".copilot-shell/config.toml"),
-                    project_ai,
-                )
-                .unwrap();
-                let user_path = home.join(".copilot-shell/config.toml");
-                if user_path.exists() {
-                    std::fs::remove_file(&user_path).unwrap();
-                }
-                let mut config = CoreConfig::load_for_workspace(project.path());
-                TEST_ECS_PROBE
-                    .scope(
-                        (Ok(true), Arc::new(std::sync::atomic::AtomicUsize::new(0))),
-                        async {
-                            let state = query(
-                                &mut config,
-                                "state",
-                                serde_json::json!({"probe_ecs_trial":true}),
-                            )
-                            .await;
-                            assert_eq!(state["data"]["ecs_trial"]["model"], "auto");
-                            let result = query(&mut config, "activate_trial", Value::Null).await;
-                            assert_eq!(result["success"], true, "{result}");
-                            assert_eq!(result["data"]["model"], "auto");
-                        },
-                    )
-                    .await;
-                let saved: CoreConfig =
-                    toml::from_str(&std::fs::read_to_string(&user_path).unwrap()).unwrap();
-                assert_eq!(saved.ai.active_model.as_deref(), Some("auto"));
-                assert_eq!(
-                    saved.ai.providers["ecs-free-trial"].model.as_deref(),
-                    Some("auto")
-                );
-                assert!(!saved.ai.providers.contains_key("untrusted"));
-                let neutral = tempfile::tempdir().unwrap();
-                assert_eq!(
-                    CoreConfig::load_for_workspace(neutral.path())
-                        .resolve_provider()
-                        .model,
-                    "auto"
-                );
-            }
-        });
-    });
-}
-
-#[test]
 fn ecs_builtin_state_probes_only_on_explicit_auth_and_never_saves_a_provider() {
     isolated(|home| {
         run(async {
@@ -142,7 +83,7 @@ fn ecs_builtin_state_probes_only_on_explicit_auth_and_never_saves_a_provider() {
                         .await;
                         assert_eq!(state["data"]["ecs_trial"]["available"], true);
                         assert_eq!(state["data"]["ecs_trial"]["active"], true);
-                        assert_eq!(state["data"]["ecs_trial"]["model"], "auto");
+                        assert_eq!(state["data"]["ecs_trial"]["model"], "qwen3.7-plus");
                         assert!(config.ai.providers.is_empty());
                         assert!(!home.join(".copilot-shell/config.toml").exists());
                         assert_eq!(server.requests.load(Ordering::SeqCst), 1);
@@ -204,14 +145,14 @@ fn ecs_builtin_activation_round_trip_preserves_other_provider_and_clears_suppres
                         let trial = config.ai.providers.get(&id).unwrap();
                         assert_eq!(trial.provider_type.as_deref(), Some("aliyun"));
                         assert_eq!(trial.auth_source.as_deref(), Some("ecs_identity"));
-                        assert_eq!(trial.model.as_deref(), Some("auto"));
+                        assert_eq!(trial.model.as_deref(), Some("qwen3.7-plus"));
                         assert!(
                             trial.access_key_id.is_none()
                                 && trial.access_key_secret.is_none()
                                 && trial.security_token.is_none()
                                 && trial.api_key.is_none()
                         );
-                        assert_eq!(config.ai.active_model.as_deref(), Some("auto"));
+                        assert_eq!(config.ai.active_model.as_deref(), Some("qwen3.7-plus"));
                         assert_eq!(
                             config.ai.providers["mine"].api_key.as_deref(),
                             Some("preserved-user-key")
@@ -332,7 +273,7 @@ fn ecs_builtin_failed_config_save_restores_disabled_preference_and_active_provid
 }
 
 #[test]
-fn ecs_builtin_first_save_uses_the_fixed_displayed_model() {
+fn ecs_builtin_first_save_preserves_displayed_implicit_model() {
     isolated(|_| {
         run(async {
             let server = Metadata::start(true).await;
@@ -346,14 +287,20 @@ fn ecs_builtin_first_save_uses_the_fixed_displayed_model() {
                         serde_json::json!({"probe_ecs_trial":true}),
                     )
                     .await;
-                    assert_eq!(state["data"]["ecs_trial"]["model"], "auto");
+                    assert_eq!(state["data"]["ecs_trial"]["model"], "chosen-trial-model");
                     assert_eq!(
                         query(&mut config, "activate_trial", Value::Null).await["success"],
                         true
                     );
                     let id = config.ai.active_provider.as_ref().unwrap();
-                    assert_eq!(config.ai.active_model.as_deref(), Some("auto"));
-                    assert_eq!(config.user_ai.providers[id].model.as_deref(), Some("auto"));
+                    assert_eq!(
+                        config.ai.active_model.as_deref(),
+                        Some("chosen-trial-model")
+                    );
+                    assert_eq!(
+                        config.user_ai.providers[id].model.as_deref(),
+                        Some("chosen-trial-model")
+                    );
                 })
                 .await;
         })
@@ -361,7 +308,7 @@ fn ecs_builtin_first_save_uses_the_fixed_displayed_model() {
 }
 
 #[test]
-fn ecs_builtin_default_provider_model_cannot_override_automatic_access() {
+fn ecs_builtin_default_provider_model_matches_the_implicit_trial_model() {
     isolated(|_| {
         run(async {
             let server = Metadata::start(true).await;
@@ -382,12 +329,15 @@ fn ecs_builtin_default_provider_model_cannot_override_automatic_access() {
                         serde_json::json!({"probe_ecs_trial":true}),
                     )
                     .await;
-                    assert_eq!(state["data"]["ecs_trial"]["model"], "auto");
+                    assert_eq!(state["data"]["ecs_trial"]["model"], "generic-trial-model");
                     assert_eq!(
                         query(&mut config, "activate_trial", Value::Null).await["success"],
                         true
                     );
-                    assert_eq!(config.ai.active_model.as_deref(), Some("auto"));
+                    assert_eq!(
+                        config.ai.active_model.as_deref(),
+                        Some("generic-trial-model")
+                    );
                 })
                 .await;
         })
@@ -430,7 +380,7 @@ fn identity_stability_registry_preserves_probe_error_without_committing() {
 }
 
 #[test]
-fn explicit_reenable_normalizes_implicit_and_saved_models_to_auto() {
+fn kongche_explicit_reenable_preserves_implicit_and_saved_selected_models() {
     for saved in [false, true] {
         isolated(|home| {
             run(async {
@@ -456,15 +406,24 @@ fn explicit_reenable_normalizes_implicit_and_saved_models_to_auto() {
                         async {
                             let result = query(&mut config, "activate_trial", Value::Null).await;
                             assert_eq!(result["success"], true, "{result}");
-                            assert_eq!(config.ai.active_model.as_deref(), Some("auto"));
+                            assert_eq!(
+                                config.ai.active_model.as_deref(),
+                                Some("chosen-trial-model")
+                            );
                             let id = config.ai.active_provider.as_ref().unwrap();
-                            assert_eq!(config.user_ai.providers[id].model.as_deref(), Some("auto"));
+                            assert_eq!(
+                                config.user_ai.providers[id].model.as_deref(),
+                                Some("chosen-trial-model")
+                            );
                             let stored: CoreConfig = toml::from_str(
                                 &std::fs::read_to_string(home.join(".copilot-shell/config.toml"))
                                     .unwrap(),
                             )
                             .unwrap();
-                            assert_eq!(stored.ai.active_model.as_deref(), Some("auto"));
+                            assert_eq!(
+                                stored.ai.active_model.as_deref(),
+                                Some("chosen-trial-model")
+                            );
                             assert!(crate::auth::trial_preferences::load().unwrap());
                         },
                     )

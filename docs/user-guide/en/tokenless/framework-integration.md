@@ -34,15 +34,14 @@ Every replaceable text result reaches the same Core candidates: JSON/TOON, build
 search paths, HTML, and Diff cropping. Content origin, lossless recovery, and savings gates
 still apply; this does not mean every result is compressed. QwenPaw and AgentScope inherit
 `TOKENLESS_COMPRESSION_ENABLED`, `TOKENLESS_SEARCH_PATH_SHARING_ENABLED`,
-`TOKENLESS_HTML_EXTRACTION_ENABLED`, `TOKENLESS_DIFF_COMPRESSION_ENABLED`, and
-`TOKENLESS_MIXED_CONTENT_ENABLED` when their SDK configuration is constructed. Explicit SDK
-arguments override environment defaults. Diff is on by default; mixed-region compression is off
-by default. The global compression switch selects dry-run and does not disable RTK rewriting.
+`TOKENLESS_HTML_EXTRACTION_ENABLED`, and `TOKENLESS_DIFF_COMPRESSION_ENABLED` when their SDK
+configuration is constructed. Explicit SDK arguments override environment defaults. Diff is
+on by default; the global compression switch selects dry-run and does not disable RTK rewriting.
 
 | Host or integration | Remaining boundary |
 |---------------------|--------------------|
 | Codex, Qwen Code | Current PostTool hooks cannot replace the original result. JSON/TOON, logs, tables, search, HTML, and Diff cannot reduce model input there; RTK command rewriting remains available. Neither integration has a usable model-tool-schema replacement event. |
-| Claude Code | Response replacement requires 2.1.121 or later. Structured outputs retain their types; only text slots can use TOON, table/search views, HTML pages, or Diff. HTML inside JSON string values can be rendered in either, because the result stays JSON. No model-tool-schema replacement hook is registered. |
+| Claude Code | Response replacement requires 2.1.121 or later. Structured outputs retain their types; only text slots can use TOON, table/search views, HTML, or Diff. No model-tool-schema replacement hook is registered. |
 | OpenClaw | Static `tokenless_retrieve` enables recoverable PostTool compression when the tool factory receives a conversation UUID. Keep this tool allowed by the host tool policy. Without the tool API or UUID, only lossless candidates apply. Prompt hooks expose messages but cannot replace tool schemas. Multi-block and multimodal results pass through. |
 | Cosh-NG / legacy Copilot Shell | Cosh-NG can replace supported results, but the Common BeforeModel hook cannot publish an executable static recovery tool. Legacy Copilot Shell cannot replace PostTool results. |
 | OpenCode V1 plugin | `tool.definition` lacks session/model-call context for marker-scoped static recovery and excludes MCP definitions; Schema stays unchanged. OpenCode's V2 plugin API is a separate migration, not supported by this V1 adapter. This is not a claim that V2 cannot support Schema compression. |
@@ -82,8 +81,6 @@ disposition keeps the original. The hook currently routes:
 | Numbered API search records, recognized native shell searches, or pure path lists from non-file command/API results, when path sharing is enabled and the host can replace output with text | Lossless sharing of consecutive paths or a directory prefix; every received record is retained, without Stash or retrieval |
 | Git diffs from command output when the host can replace output with text (enabled by default; `TOKENLESS_DIFF_COMPRESSION_ENABLED=0` disables it) | Unchanged-context cropping with per-hunk selection; every changed line is kept, the complete original stays retrievable through Stash, and marginal candidates are rejected |
 | Complete HTML documents from command output or API responses (not file reads) when the host can replace output with text and Stash-backed recovery is available; enabled by default, `TOKENLESS_HTML_EXTRACTION_ENABLED=0` disables it | Main-content rendering as Markdown with removal counts in the view header; the complete original stays retrievable through Stash, and marginal candidates are rejected |
-| HTML fragments or documents inside JSON string values from command output or API responses (not file reads) when Stash-backed recovery is available; same switch as HTML pages | Each value is rendered whole as Markdown in place, with types, numbers and other fields unchanged; values whose view could drop visible text, targets, form state, or meaning carried by styles, attributes, line breaks, list numbers or table headers, or reveal text hidden on screen, pass through, and each original value stays retrievable through Stash. See [HTML inside JSON values](configuration-and-privacy.md#html-inside-json-values) |
-| Mixed tool outputs that no whole-content domain handles, when `TOKENLESS_MIXED_CONTENT_ENABLED` opts in (default off) and the host can replace output with text | Fenced `json`/`csv`/`tsv` blocks and bracket-balanced bare JSON documents compress per region with the same policy as their standalone routes; surrounding text stays byte-for-byte and a rejected region stays verbatim |
 | Long plain text, stack trace, source code, unknown | Passthrough until a matching domain compressor is connected |
 
 Content detection, the 200-character PostTool gate, tool-origin thresholds, diagnostics, TOON
@@ -92,9 +89,7 @@ skip obvious non-JSON skill files only to avoid an unnecessary subprocess.
 
 Native shell envelopes expose their dominant `stdout` or `stderr` text from 200 characters
 onward, so short logs reach the same domain compressors as plain text. Qoder's native Bash
-selects only string `stdout`, including short or empty values. If `stdout` is missing or is
-not a string, the original result is not replaced. `stderr` and other fields stay unchanged;
-error diagnostics can still inspect `stderr`.
+always selects `stdout`, including short or empty values. Other fields stay unchanged.
 Qoder's native Bash stdout, Claude Code, and QwenWork keep object replacements. Cosh-NG unwraps
 shell JSON carried in `llmContent` and serializes the updated envelope into its required string
 replacement; OpenCode keeps its string output contract.
@@ -566,25 +561,6 @@ The optional `selective-claw` context engine has its own configuration under
 is `selective-claw.db` under `OPENCLAW_STATE_DIR`, or under `~/.openclaw` when that
 variable is unset. Setting the plugin's `enabled` option to `false` skips database,
 context engine and recall tool registration.
-
-#### Selective-Claw archive write failures
-
-Selective-Claw groups the message inserts of each bootstrap or history-reconciliation
-batch in one SQLite savepoint. A failed batch rolls back its inserts and propagates
-the original error, so an empty archive remains eligible for the initial import.
-Resolve the storage failure, such as exhausted capacity, then retry the failed
-operation. Previously partial imports from older code are not repaired automatically.
-
-An import inside a caller-owned SQLite transaction still needs the caller's commit.
-SQLite can itself abort that entire transaction on errors such as `SQLITE_FULL`;
-callers must handle that outer failure. Cleanup cannot guarantee rollback through an
-unusable connection. If savepoint cleanup also fails, the plugin logs that secondary
-error and still propagates the original import error. This warning alone does not
-establish whether SQLite has already ended the transaction. Reopen the plugin's
-database connection before reuse if cleanup cannot be completed. This batch
-boundary does not cover later summarization or
-assembly failures, other lifecycle calls, or earlier committed messages. No schema
-migration is required.
 
 ### Hermes
 

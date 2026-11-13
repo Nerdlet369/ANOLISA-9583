@@ -56,58 +56,6 @@ target/debug/aw status --config crates/aw-service/examples/aw.qoder.yaml
 target/debug/aw stop --config crates/aw-service/examples/aw.qoder.yaml
 ```
 
-## Prepare native startup
-
-Install the startup Hooks once while Qoder is stopped, then use the usual `qoder`
-or `qodercli` command. The configured `argv[0]` must resolve to the actual
-`qodercli` executable; a shell dispatcher may launch it, but AW does not infer an
-arbitrary wrapper's executable. `HOME/.qoder` and the selected startup directory
-must be canonical, same-user private directories (mode `0700`). Setup preserves
-existing settings and user Hooks.
-
-```bash
-mkdir -p "$HOME/.local/state/aw"
-target/debug/aw instance setup --config aw.yaml --agent qoder \
-  --directory "$HOME/.local/state/aw/qoder-startup"
-qoder
-# Or use native print mode:
-qoder -p 'Review this harmless prompt.'
-```
-
-`SessionStart` prepares and confirms the instance from a direct native callback.
-The initial `aw.yaml` policy applies before the first submission. Each owner has
-its own PID, start identity, session and service-generation binding, so multiple
-Qoder processes can share the prepared profile. While the selected instance is
-idle, edit the permitted policy fields and run:
-
-```bash
-target/debug/aw instance update --config aw.yaml --instance INSTANCE_ID
-```
-
-Print requests read their initial policy at startup; updates cannot interrupt an
-active request. Existing native argument limits still apply: custom settings
-sources, disabled Hooks, worktrees, resume and remote entrypoints require a
-separate supported integration. A missing or stale startup binding blocks input
-and before-tool callbacks. Normal `SessionEnd` releases runtime assets. After an
-abnormal owner exit, wait for service cleanup and remove the installation:
-
-```bash
-target/debug/aw instance setup --remove --config aw.yaml --agent qoder \
-  --directory "$HOME/.local/state/aw/qoder-startup"
-```
-
-Removal refuses live owners, reclaims only confirmed stale owner records and
-owned assets, and removes exact installed groups while retaining user changes.
-Edited AW groups must be restored before removal can proceed. If the service socket
-is absent, removal only confirms owner exit and removes its private local assets;
-it does not assert a successful service drain. An interrupted unpublished claim
-can be removed after its owner exits, but malformed contents never select other
-files for deletion. Native print
-acceptance verifies input blocking before any model request; tool updates and
-multiple-owner isolation also have deterministic service tests. Existing TUI
-[attachment](../deployment/independent-instances.md) remains available for the
-supported idle-process entrypoint.
-
 ## Check user submissions
 
 Ordinary print and terminal launches support `input.submit` through Qoder's
@@ -121,44 +69,10 @@ after recording a check failure.
 The native `session_id` and `request_set_id` identify one submission across
 parallel or sequential AW steps. Missing identities fail according to the
 step's failure action. Existing native Hooks remain enabled; their subsequent
-context additions are outside the submitted-text snapshot. Reloadable and attached TUI routes also dispatch this event before the model
-request. The stable callback uses the active policy while the request keeps
-its revision until native idle confirmation. Ordinary CLI bindings
+context additions are outside the submitted-text snapshot. Reloadable and
+attached routes do not yet support this input event. Ordinary CLI bindings
 retain replay records for at most 1,024 distinct checked submissions; start a
 new CLI session before that limit.
-
-## Manage a native terminal session
-
-For Qoder CLI 1.1.73, start the terminal normally with an exclusive private HOME
-profile, then attach before its first request. Set the matching executable in
-`spec.agents.qoder.argv` in `aw.yaml`. From the directory containing that file:
-
-```bash
-aw instance attach --agent qoder --pid "$QODER_PID"
-aw instance update --agent qoder
-```
-
-Set `QODER_PID` to the terminal process you started. Attachment verifies its
-start identity and native settings adoption before marking the instance Ready.
-Edit only policy fields in `aw.yaml`, then run the update command between
-requests. Active requests, tools and uncertain cleanup reject updates. With
-multiple instances, use `--instance INSTANCE_ID` to select one explicitly.
-
-This route supports `input.submit`, `tool.before` and `tool.after`. Print mode,
-headless fast hooks and a profile shared by another Qoder process are rejected.
-The automated attachment fixture covers adding and removing input denial before
-model dispatch. Authenticated 1.1.73 TUI acceptance verifies tool denial, tool
-execution after an idle update, and detach/reattach preserving the native process
-and user settings.
-
-Remove the attachment after the terminal is idle:
-
-```bash
-aw instance attach --agent qoder --pid "$QODER_PID" --remove
-```
-
-AW restores only its owned settings entries. See [policy updates](../deployment/policy-updates.md)
-for revision checks and recovery after an interrupted attachment.
 
 ## Keep existing Hooks and scheduling
 

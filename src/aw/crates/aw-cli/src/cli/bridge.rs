@@ -40,12 +40,6 @@ fn invoke(args: &Arguments) -> Result<Exit> {
         super::attachment::confirm::confirm(&binding, path, &native, deadline)?;
         return Ok(Exit::Code(0));
     }
-    invoke_bound(binding, bytes)
-}
-
-pub(super) fn invoke_bound(binding: HookBinding, bytes: Vec<u8>) -> Result<Exit> {
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let native: serde_json::Value = serde_json::from_slice(&bytes)?;
     let (phase, key, pid) = if binding.adapter == "qoder" {
         let (phase, key) = aw_adapter::reload::qoder_lifecycle(&binding.native_context(), &native)?;
         // SAFETY: getppid reads the native exec-form callback's parent process.
@@ -54,10 +48,7 @@ pub(super) fn invoke_bound(binding: HookBinding, bytes: Vec<u8>) -> Result<Exit>
             key,
             unsafe { libc::getppid() } as u32,
         )
-    } else if matches!(
-        binding.adapter.as_str(),
-        "qwenpaw" | "qoder-sdk" | "openclaw" | "hermes"
-    ) {
+    } else if matches!(binding.adapter.as_str(), "qwenpaw" | "qoder-sdk") {
         (
             serde_json::from_value::<LifecyclePhase>(native["phase"].clone())?,
             native["key"]
@@ -72,43 +63,18 @@ pub(super) fn invoke_bound(binding: HookBinding, bytes: Vec<u8>) -> Result<Exit>
     } else {
         return Err("unsupported lifecycle adapter".into());
     };
-    let client = Client::from_identity(&binding.socket, binding.binding.identity.clone());
-    if matches!(phase, LifecyclePhase::Ready) {
-        super::native::ready(&binding, &client, pid, deadline)?;
+    let client = Client::connect(&binding.socket, deadline)?;
+    if client.identity() != &binding.binding.identity {
+        return Err("stale lifecycle binding".into());
     }
     client.call(
         Operation::BridgeLifecycle {
-            instance_id: binding.binding.instance_id.clone(),
+            instance_id: binding.binding.instance_id,
             pid,
             phase,
-            key: key.clone(),
+            key,
         },
         deadline,
     )?;
-    if binding.adapter == "qoder" && native["hook_event_name"] == "UserPromptSubmit" {
-        let id = binding.binding.instance_id.clone();
-        let output = super::dispatch::invoke_bound(
-            aw_adapter::select("qoder")?,
-            binding,
-            "input.submit",
-            bytes,
-            Instant::now() + Duration::from_secs(59),
-        );
-        if !output
-            .as_ref()
-            .is_ok_and(|output| !aw_adapter::reload::denied(output))
-        {
-            client.call(
-                Operation::BridgeLifecycle {
-                    instance_id: id,
-                    pid,
-                    phase: LifecyclePhase::RequestEnd,
-                    key,
-                },
-                Instant::now() + Duration::from_secs(2),
-            )?;
-        }
-        return super::hook::emit(output?);
-    }
     Ok(Exit::Code(0))
 }

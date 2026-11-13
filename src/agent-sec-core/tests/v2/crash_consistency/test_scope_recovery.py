@@ -15,8 +15,6 @@ def test_scope_recovers_discovery_and_preserves_binding_across_two_crashes(recov
         policy["policyId"],
         "--name",
         "updated",
-        "--language",
-        "json",
         "--file",
         str(recovery.directory / "policy.json"),
     )

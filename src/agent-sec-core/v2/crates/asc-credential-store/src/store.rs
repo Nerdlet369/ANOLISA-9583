@@ -1,120 +1,132 @@
-//! Explicit real/fake pairs with atomic registration and canonical Scope membership.
-
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use ring::rand::{SecureRandom as _, SystemRandom};
+use ring::rand::SystemRandom;
 use serde::{Deserialize, Serialize};
 
 use crate::filesystem::{DirectoryAccess, PinnedDirectory};
 use crate::secret::validate_token_value;
-use crate::{CredentialId, CredentialStoreError, ScopeId, Secret, validate_pair};
+use crate::{CredentialId, CredentialStoreError, FakeFormat, ScopeId, Secret};
 
-/// File holding all pairs inside the store directory.
+/// File holding all credential records inside the store directory.
 pub const STORE_FILE_NAME: &str = "store.json";
-/// Maximum active pairs assigned to one Scope.
+/// Maximum active fakes issued to one Scope.
 pub const MAX_ACTIVE_FAKES_PER_SCOPE: usize = 64;
-/// Maximum registered pairs, including permanent tombstones.
+/// Maximum fakes across all credentials, tombstones included.
+///
+/// Tombstones are never pruned, so repeated remove/re-add cycles consume this
+/// budget permanently; removed fakes must stay rejected rather than becoming unknown.
 pub const MAX_FAKES_TOTAL: usize = 4096;
 
 const STORE_FILE_MODE: rustix::fs::RawMode = 0o600;
 const MAX_STORE_BYTES: u64 = 8 * 1024 * 1024;
-const STORE_VERSION: u32 = 2;
-const MAX_REGISTRATIONS: usize = 4096;
-const MAX_REGISTRATION_PAIRS: usize = 256;
+const STORE_VERSION: u32 = 1;
+const FAKE_ATTEMPTS: usize = 8;
 
-/// Caller-provided values; registration never infers authentication metadata.
-pub struct PairInput {
-    /// Real value, retained only while the pair is not retired.
-    pub real: Secret,
-    /// Explicit replacement value.
-    pub fake: String,
+/// Request location where a credential's fake may appear and be replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Carrier {
+    /// The token part of an `Authorization: Bearer|token <value>` header.
+    HeaderToken,
+    /// The password of an `Authorization: Basic` header.
+    BasicPassword,
 }
 
-impl std::fmt::Debug for PairInput {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("PairInput").finish_non_exhaustive()
-    }
+/// Credential type metadata, independent of authorization rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialSpec {
+    /// Store identifier.
+    pub id: CredentialId,
+    /// Locations the gateway inspects for this credential's fakes.
+    pub carriers: Vec<Carrier>,
+    /// Shape used when issuing fakes.
+    pub format: FakeFormat,
 }
 
 /// Lifecycle state visible to administrators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialState {
-    /// Registered, possibly pending its first Scope assignment.
+    /// Holds a real value and can issue fakes.
     Active,
-    /// Permanently retired; only its fake tombstone remains.
+    /// Removed; its former fakes are kept only as rejection tombstones.
     Retired,
 }
 
-/// Value-free description of one pair.
+/// Value-free description of one credential.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialSummary {
-    /// Stable opaque pair identifier.
+    /// Store identifier.
     pub id: CredentialId,
     /// Lifecycle state.
     pub state: CredentialState,
-    /// Current memberships, or last memberships of a retired pair.
+    /// Configured carriers.
+    pub carriers: Vec<Carrier>,
+    /// Issued fakes, abbreviated.
     pub fakes: Vec<FakeSummary>,
 }
 
-/// Abbreviated fake associated with a Scope.
+/// Abbreviated fake: enough to recognise it, not enough to use it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FakeSummary {
-    /// Current or last Scope membership.
+    /// Scope the fake belongs to.
     pub scope_id: ScopeId,
-    /// Whether the entire pair is permanently retired.
+    /// Whether the fake is a tombstone of a removed credential.
     pub retired: bool,
-    /// Last four characters; empty for short fakes to avoid exposing the whole value.
+    /// Last four characters of the fake.
     pub suffix: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Fake {
+    pub(crate) scope_id: ScopeId,
+    pub(crate) value: String,
+}
+
 pub(crate) struct Record {
+    pub(crate) carriers: Vec<Carrier>,
+    pub(crate) format: FakeFormat,
     pub(crate) real: Option<Secret>,
-    pub(crate) fake: String,
-    pub(crate) scope_ids: BTreeSet<ScopeId>,
-    // Last memberships are display metadata only, never authorization.
-    retired_scope_ids: BTreeSet<ScopeId>,
+    pub(crate) fakes: Vec<Fake>,
+    pub(crate) retired_fakes: Vec<Fake>,
 }
 
 impl Record {
     fn duplicate(&self) -> Self {
         Self {
+            carriers: self.carriers.clone(),
+            format: self.format.clone(),
             real: self.real.as_ref().map(Secret::duplicate),
-            fake: self.fake.clone(),
-            scope_ids: self.scope_ids.clone(),
-            retired_scope_ids: self.retired_scope_ids.clone(),
+            fakes: self.fakes.clone(),
+            retired_fakes: self.retired_fakes.clone(),
         }
-    }
-
-    fn retire(&mut self) {
-        self.real = None;
-        self.retired_scope_ids = std::mem::take(&mut self.scope_ids);
     }
 }
 
 type Records = BTreeMap<CredentialId, Record>;
-type Registrations = BTreeMap<String, Vec<CredentialId>>;
 
-/// Owner-only store backed by one atomically replaced file and one exclusive lock.
+/// Root-only credential store backed by one atomically replaced file.
 ///
-/// Every mutation is copied, validated, persisted, and only then published in memory.
-/// Retired fakes never become available again, even under a new pair identifier.
+/// The directory must be owned by the effective user with mode 0700 and the
+/// store file with mode 0600; symlinks are refused at every path component.
+/// Every mutation is computed on a copy, validated, persisted, and only then
+/// becomes visible, so a failed write leaves both disk and memory unchanged.
 pub struct CredentialStore {
     pub(crate) directory: PinnedDirectory,
     pub(crate) records: Records,
-    registrations: Registrations,
     random: SystemRandom,
 }
 
 impl CredentialStore {
-    /// Opens an existing store without creating it.
+    /// Opens an existing store without creating anything.
     ///
     /// # Errors
-    /// Returns `NotEnabled` for an absent directory, or lock, path, I/O and schema errors.
+    /// Returns [`CredentialStoreError::NotEnabled`] when the directory is
+    /// absent, and path, I/O or corruption errors otherwise.
     pub fn open(directory: &Path) -> Result<Self, CredentialStoreError> {
         let pinned = PinnedDirectory::open_existing(directory, DirectoryAccess::OwnerOnly)?
             .ok_or_else(|| CredentialStoreError::NotEnabled {
@@ -123,222 +135,167 @@ impl CredentialStore {
         Self::load(pinned)
     }
 
-    /// Creates the final 0700 directory when missing; its parent must already exist.
+    /// Creates the 0700 store directory when missing and opens the store.
+    ///
+    /// The parent directory must already exist; it is not created.
     ///
     /// # Errors
-    /// Returns lock, path, I/O and schema errors; unsupported stores are not migrated.
+    /// Returns path, I/O or corruption errors.
     pub fn create(directory: &Path) -> Result<Self, CredentialStoreError> {
         Self::load(PinnedDirectory::create_owner_only(directory)?)
     }
 
     fn load(directory: PinnedDirectory) -> Result<Self, CredentialStoreError> {
+        // A single writer is assumed by copy-validate-commit; a second one would lose updates.
         directory.lock_exclusive()?;
-        let (records, registrations) =
+        directory.remove_temporaries()?;
+        let records =
             match directory.read_file(STORE_FILE_NAME, STORE_FILE_MODE, MAX_STORE_BYTES)? {
                 Some(bytes) => decode(&bytes)?,
-                None => (Records::new(), Registrations::new()),
+                None => Records::new(),
             };
-        // Do not touch files in an unsupported or corrupt store.
-        directory.remove_temporaries()?;
         Ok(Self {
             directory,
             records,
-            registrations,
             random: SystemRandom::new(),
         })
     }
 
-    /// Registers an entire batch atomically, returning identifiers in input order.
+    /// Imports a real credential without replacing an active value or spec.
     ///
-    /// Identical live pairs reuse their stable random identifier across input files.
-    /// A real may have multiple fakes, but a fake has exactly one pair owner forever.
-    ///
-    /// # Errors
-    /// Returns pair validation, collision, retirement, capacity or persistence errors.
-    pub fn register_pairs(
-        &mut self,
-        inputs: Vec<PairInput>,
-    ) -> Result<Vec<CredentialId>, CredentialStoreError> {
-        let mut records = self.duplicate_records();
-        let ids = self.prepare_pairs(&mut records, inputs)?;
-        if records.len() != self.records.len() {
-            self.commit(records, self.registrations.clone())?;
-        }
-        Ok(ids)
-    }
-
-    /// Looks up ordered pair identifiers without rereading the input token files.
-    ///
-    /// `key` is the caller's lowercase SHA-256 hex digest of the complete Cedar
-    /// source and schema, never a secret digest or a public credential identity.
-    /// A receipt records registration only; it grants no Scope membership.
+    /// Identical value and spec (with carriers treated as a set) are a no-op.
+    /// Reimport after removal reactivates the credential; its old fakes remain
+    /// permanent rejection tombstones.
     ///
     /// # Errors
-    /// Rejects malformed keys and receipts referring to missing or permanently retired pairs.
-    pub fn lookup_registration(
-        &self,
-        key: &str,
-    ) -> Result<Option<Vec<CredentialId>>, CredentialStoreError> {
-        validate_registration_key(key)?;
-        let Some(ids) = self.registrations.get(key) else {
-            return Ok(None);
-        };
-        for id in ids {
-            let record = self
-                .records
-                .get(id)
-                .ok_or_else(|| CredentialStoreError::UnknownCredential(id.clone()))?;
-            if record.real.is_none() {
-                return Err(CredentialStoreError::Retired(id.clone()));
-            }
-        }
-        Ok(Some(ids.clone()))
-    }
-
-    /// Atomically registers pairs and a source receipt, preserving input order.
-    ///
-    /// Stores only the source/schema key described by [`Self::lookup_registration`]
-    /// and 1..=256 pair identifiers. Repeated keys must supply exactly the same
-    /// ordered real/fake pairs and do not rewrite the store.
-    ///
-    /// # Errors
-    /// Returns validation, collision, retirement, receipt mismatch, capacity or I/O errors.
-    pub fn register_policy_pairs(
-        &mut self,
-        key: &str,
-        inputs: Vec<PairInput>,
-    ) -> Result<Vec<CredentialId>, CredentialStoreError> {
-        let registered = self.lookup_registration(key)?;
-        if !(1..=MAX_REGISTRATION_PAIRS).contains(&inputs.len()) {
-            return Err(CredentialStoreError::Invalid {
-                field: "registration pairs",
-                reason: "must contain 1..=256 pairs",
-            });
-        }
-        if registered
-            .as_ref()
-            .is_some_and(|ids| ids.len() != inputs.len())
+    /// Returns [`CredentialStoreError::Conflict`] for a different active value
+    /// or spec, [`CredentialStoreError::DuplicateValue`] for a collision with
+    /// another real value or any fake, and validation or persistence errors otherwise.
+    pub fn put(&mut self, spec: CredentialSpec, real: Secret) -> Result<(), CredentialStoreError> {
+        let mut carriers = spec.carriers;
+        carriers.sort_unstable();
+        carriers.dedup();
+        if let Some(record) = self.records.get(&spec.id)
+            && let Some(old) = &record.real
         {
+            if old.matches(real.expose())
+                && record.carriers == carriers
+                && record.format == spec.format
+            {
+                return Ok(());
+            }
+            return Err(CredentialStoreError::Conflict(spec.id));
+        }
+        if carriers.is_empty() {
             return Err(CredentialStoreError::Invalid {
-                field: "registration pairs",
-                reason: "batch length differs from the source receipt",
+                field: "carriers",
+                reason: "at least one carrier is required",
             });
         }
-        if registered.is_none() && self.registrations.len() >= MAX_REGISTRATIONS {
-            return Err(CredentialStoreError::Capacity(
-                "source registration limit reached",
-            ));
+        spec.format.check(real.expose())?;
+        let collides = self.records.iter().any(|(id, record)| {
+            (*id != spec.id
+                && record
+                    .real
+                    .as_ref()
+                    .is_some_and(|other| other.matches(real.expose())))
+                || record
+                    .fakes
+                    .iter()
+                    .chain(&record.retired_fakes)
+                    .any(|fake| real.matches(&fake.value))
+        });
+        if collides {
+            return Err(CredentialStoreError::DuplicateValue(spec.id));
         }
         let mut records = self.duplicate_records();
-        let ids = self.prepare_pairs(&mut records, inputs)?;
-        if let Some(registered) = registered {
-            if ids != registered {
-                return Err(CredentialStoreError::Invalid {
-                    field: "registration pairs",
-                    reason: "ordered pairs differ from the source receipt",
-                });
+        match records.get_mut(&spec.id) {
+            None => {
+                records.insert(
+                    spec.id,
+                    Record {
+                        carriers,
+                        format: spec.format,
+                        real: Some(real),
+                        fakes: Vec::new(),
+                        retired_fakes: Vec::new(),
+                    },
+                );
             }
-            return Ok(ids);
+            Some(record) => {
+                record.real = Some(real);
+                record.carriers = carriers;
+                record.format = spec.format;
+            }
         }
-        let mut registrations = self.registrations.clone();
-        registrations.insert(key.to_owned(), ids.clone());
-        self.commit(records, registrations)?;
-        Ok(ids)
+        self.commit(records)
     }
 
-    /// Checks one proposed Scope without activating pairs or changing retirement state.
-    /// # Errors
-    /// Rejects missing or retired pairs, duplicate real values and excess active pairs.
-    pub fn validate_scope_pairs(&self, ids: &[CredentialId]) -> Result<(), CredentialStoreError> {
-        let mut seen = BTreeSet::new();
-        let mut reals: Vec<&Secret> = Vec::new();
-        for id in ids {
-            let record = self
-                .records
-                .get(id)
-                .ok_or_else(|| CredentialStoreError::UnknownCredential(id.clone()))?;
-            let real = record
-                .real
-                .as_ref()
-                .ok_or_else(|| CredentialStoreError::Retired(id.clone()))?;
-            if !seen.insert(id) {
-                continue;
-            }
-            if reals.iter().any(|other| other.matches(real.expose())) {
-                return Err(CredentialStoreError::Conflict(id.clone()));
-            }
-            reals.push(real);
-        }
-        if seen.len() > MAX_ACTIVE_FAKES_PER_SCOPE {
-            return Err(CredentialStoreError::Capacity(
-                "per-scope active pair limit reached",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Replaces all active Scope memberships with the caller's canonical assignments.
+    /// Returns the fake of `credential` for `scope_id`, issuing and persisting one when absent.
     ///
-    /// Omitted memberships are revoked. Losing the last membership retires a pair;
-    /// a pending pair with no previous membership remains registered without activation.
+    /// Repeated calls return the same fake.
     ///
     /// # Errors
-    /// Returns unknown/retired pair, repeated Scope, ambiguous real, capacity or I/O errors.
-    pub fn sync_scopes(
+    /// Returns unknown/retired credential, capacity, fake generation or persistence errors.
+    pub fn issue_fake(
         &mut self,
-        assignments: &[(ScopeId, Vec<CredentialId>)],
-    ) -> Result<(), CredentialStoreError> {
-        let mut memberships: BTreeMap<CredentialId, BTreeSet<ScopeId>> = BTreeMap::new();
-        let mut scopes = BTreeSet::new();
-        for (scope, ids) in assignments {
-            if !scopes.insert(scope) {
-                return Err(CredentialStoreError::Invalid {
-                    field: "scope assignments",
-                    reason: "must not repeat a Scope",
-                });
-            }
-            self.validate_scope_pairs(ids)?;
-            for id in ids {
-                memberships
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(scope.clone());
+        credential: &CredentialId,
+        scope_id: &ScopeId,
+    ) -> Result<String, CredentialStoreError> {
+        let record = self
+            .records
+            .get(credential)
+            .ok_or_else(|| CredentialStoreError::UnknownCredential(credential.clone()))?;
+        let Some(real) = &record.real else {
+            return Err(CredentialStoreError::Retired(credential.clone()));
+        };
+        if let Some(fake) = record.fakes.iter().find(|fake| fake.scope_id == *scope_id) {
+            return Ok(fake.value.clone());
+        }
+        if self.active_fakes_of(scope_id) >= MAX_ACTIVE_FAKES_PER_SCOPE {
+            return Err(CredentialStoreError::Capacity(
+                "per-scope active fake limit reached",
+            ));
+        }
+        if self.total_fakes() >= MAX_FAKES_TOTAL {
+            return Err(CredentialStoreError::Capacity("global fake limit reached"));
+        }
+        let mut value = None;
+        for _ in 0..FAKE_ATTEMPTS {
+            let candidate = record.format.generate(real.expose(), &self.random)?;
+            if !self.is_managed_value(&candidate) {
+                value = Some(candidate);
+                break;
             }
         }
+        let value = value.ok_or(CredentialStoreError::FakeGeneration)?;
         let mut records = self.duplicate_records();
-        let mut changed = false;
-        for (id, record) in &mut records {
-            if record.real.is_none() {
-                continue;
-            }
-            let scopes = memberships.remove(id).unwrap_or_default();
-            if scopes == record.scope_ids {
-                continue;
-            }
-            if scopes.is_empty() && !record.scope_ids.is_empty() {
-                record.retire();
-            } else {
-                record.scope_ids = scopes;
-            }
-            changed = true;
+        if let Some(record) = records.get_mut(credential) {
+            record.fakes.push(Fake {
+                scope_id: scope_id.clone(),
+                value: value.clone(),
+            });
         }
-        if changed {
-            self.commit(records, self.registrations.clone())?;
-        }
-        Ok(())
+        self.commit(records)?;
+        Ok(value)
     }
 
-    /// Returns a fake only for an active pair's current Scope membership.
+    /// Returns the already issued fake of `credential` for `scope_id`.
     pub fn fake(&self, credential: &CredentialId, scope_id: &ScopeId) -> Option<&str> {
-        let record = self.records.get(credential)?;
-        (record.real.is_some() && record.scope_ids.contains(scope_id))
-            .then_some(record.fake.as_str())
+        self.records
+            .get(credential)?
+            .fakes
+            .iter()
+            .find(|fake| fake.scope_id == *scope_id)
+            .map(|fake| fake.value.as_str())
     }
 
-    /// Permanently retires a pair globally; repeated removal is a no-op.
+    /// Retires a credential: drops its real value and turns its fakes into tombstones.
+    ///
+    /// Removing an already retired credential is a no-op.
     ///
     /// # Errors
-    /// Returns unknown pair or persistence errors.
+    /// Returns [`CredentialStoreError::UnknownCredential`] or persistence errors.
     pub fn remove(&mut self, credential: &CredentialId) -> Result<(), CredentialStoreError> {
         let record = self
             .records
@@ -349,109 +306,68 @@ impl CredentialStore {
         }
         let mut records = self.duplicate_records();
         if let Some(record) = records.get_mut(credential) {
-            record.retire();
+            record.real = None;
+            let fakes = std::mem::take(&mut record.fakes);
+            record.retired_fakes.extend(fakes);
         }
-        self.commit(records, self.registrations.clone())
+        self.commit(records)
     }
 
-    /// Lists pair state without real values or complete fake values.
+    /// Turns the fake of `credential` held by `scope_id` into a tombstone.
+    ///
+    /// Other Scopes keep using the credential. Retiring an absent fake
+    /// is a no-op; a later [`Self::issue_fake`] issues a new value.
+    ///
+    /// # Errors
+    /// Returns [`CredentialStoreError::UnknownCredential`] or persistence errors.
+    pub fn retire_fake(
+        &mut self,
+        credential: &CredentialId,
+        scope_id: &ScopeId,
+    ) -> Result<(), CredentialStoreError> {
+        let record = self
+            .records
+            .get(credential)
+            .ok_or_else(|| CredentialStoreError::UnknownCredential(credential.clone()))?;
+        if !record.fakes.iter().any(|fake| fake.scope_id == *scope_id) {
+            return Ok(());
+        }
+        let mut records = self.duplicate_records();
+        if let Some(record) = records.get_mut(credential) {
+            let (retired, kept) = std::mem::take(&mut record.fakes)
+                .into_iter()
+                .partition(|fake| fake.scope_id == *scope_id);
+            record.fakes = kept;
+            record.retired_fakes.extend::<Vec<Fake>>(retired);
+        }
+        self.commit(records)
+    }
+
+    /// Lists credentials without real values and with abbreviated fakes.
     pub fn list(&self) -> Vec<CredentialSummary> {
         self.records
             .iter()
-            .map(|(id, record)| {
-                let retired = record.real.is_none();
-                let scopes = if retired {
-                    &record.retired_scope_ids
+            .map(|(id, record)| CredentialSummary {
+                id: id.clone(),
+                state: if record.real.is_some() {
+                    CredentialState::Active
                 } else {
-                    &record.scope_ids
-                };
-                CredentialSummary {
-                    id: id.clone(),
-                    state: if retired {
-                        CredentialState::Retired
-                    } else {
-                        CredentialState::Active
-                    },
-                    fakes: scopes
-                        .iter()
-                        .map(|scope_id| FakeSummary {
-                            scope_id: scope_id.clone(),
-                            retired,
-                            suffix: if record.fake.len() > 4 {
-                                record.fake[record.fake.len() - 4..].to_owned()
-                            } else {
-                                String::new()
-                            },
-                        })
-                        .collect(),
-                }
+                    CredentialState::Retired
+                },
+                carriers: record.carriers.clone(),
+                fakes: record
+                    .fakes
+                    .iter()
+                    .map(|fake| (fake, false))
+                    .chain(record.retired_fakes.iter().map(|fake| (fake, true)))
+                    .map(|(fake, retired)| FakeSummary {
+                        scope_id: fake.scope_id.clone(),
+                        retired,
+                        suffix: suffix(&fake.value),
+                    })
+                    .collect(),
             })
             .collect()
-    }
-
-    fn prepare_pairs(
-        &self,
-        records: &mut Records,
-        inputs: Vec<PairInput>,
-    ) -> Result<Vec<CredentialId>, CredentialStoreError> {
-        let mut ids = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            validate_pair(input.real.expose(), &input.fake)?;
-            if let Some((id, record)) = records.iter().find(|(_, r)| r.fake == input.fake) {
-                let real = record
-                    .real
-                    .as_ref()
-                    .ok_or_else(|| CredentialStoreError::Retired(id.clone()))?;
-                if !real.matches(input.real.expose()) {
-                    return Err(CredentialStoreError::DuplicateValue(id.clone()));
-                }
-                ids.push(id.clone());
-                continue;
-            }
-            for (id, record) in records.iter() {
-                if input.real.matches(&record.fake)
-                    || record
-                        .real
-                        .as_ref()
-                        .is_some_and(|real| real.matches(&input.fake))
-                {
-                    return Err(CredentialStoreError::DuplicateValue(id.clone()));
-                }
-            }
-            if records.len() >= MAX_FAKES_TOTAL {
-                return Err(CredentialStoreError::Capacity("global pair limit reached"));
-            }
-            let id = self.new_id(records)?;
-            records.insert(
-                id.clone(),
-                Record {
-                    real: Some(input.real),
-                    fake: input.fake,
-                    scope_ids: BTreeSet::new(),
-                    retired_scope_ids: BTreeSet::new(),
-                },
-            );
-            ids.push(id);
-        }
-        Ok(ids)
-    }
-
-    fn new_id(&self, records: &Records) -> Result<CredentialId, CredentialStoreError> {
-        for _ in 0..8 {
-            let mut bytes = [0_u8; 16];
-            self.random
-                .fill(&mut bytes)
-                .map_err(|_| CredentialStoreError::Randomness)?;
-            let mut value = String::from("pair-");
-            for byte in bytes {
-                let _ = write!(value, "{byte:02x}");
-            }
-            let id = CredentialId::new(value)?;
-            if !records.contains_key(&id) {
-                return Ok(id);
-            }
-        }
-        Err(CredentialStoreError::Randomness)
     }
 
     fn duplicate_records(&self) -> Records {
@@ -461,25 +377,55 @@ impl CredentialStore {
             .collect()
     }
 
-    fn commit(
-        &mut self,
-        records: Records,
-        registrations: Registrations,
-    ) -> Result<(), CredentialStoreError> {
-        validate(&records, &registrations)?;
-        let bytes = encode(&records, &registrations)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_STORE_BYTES {
-            return Err(CredentialStoreError::Capacity("store byte limit reached"));
-        }
-        let result = self
+    fn active_fakes_of(&self, scope_id: &ScopeId) -> usize {
+        self.records
+            .values()
+            .flat_map(|record| &record.fakes)
+            .filter(|fake| fake.scope_id == *scope_id)
+            .count()
+    }
+
+    fn total_fakes(&self) -> usize {
+        self.records
+            .values()
+            .map(|record| record.fakes.len() + record.retired_fakes.len())
+            .sum()
+    }
+
+    fn is_managed_value(&self, candidate: &str) -> bool {
+        self.records.values().any(|record| {
+            record
+                .real
+                .as_ref()
+                .is_some_and(|real| real.matches(candidate))
+                || record
+                    .fakes
+                    .iter()
+                    .chain(&record.retired_fakes)
+                    .any(|fake| fake.value == candidate)
+        })
+    }
+
+    fn commit(&mut self, records: Records) -> Result<(), CredentialStoreError> {
+        validate(&records)?;
+        let bytes = encode(&records)?;
+        match self
             .directory
-            .write_atomic(STORE_FILE_NAME, &bytes, STORE_FILE_MODE, None);
-        // After rename, both pairs and receipts follow disk even if directory fsync fails.
-        if result.is_ok() || result.as_ref().is_err_and(|failure| failure.replaced) {
-            self.records = records;
-            self.registrations = registrations;
+            .write_atomic(STORE_FILE_NAME, &bytes, STORE_FILE_MODE, None)
+        {
+            Ok(()) => {
+                self.records = records;
+                Ok(())
+            }
+            Err(failure) => {
+                // Once renamed, the disk holds the new state; memory must follow it, or a
+                // removed credential would keep being materialized until restart.
+                if failure.replaced {
+                    self.records = records;
+                }
+                Err(failure.error)
+            }
         }
-        result.map_err(|failure| failure.error)
     }
 }
 
@@ -488,9 +434,14 @@ impl std::fmt::Debug for CredentialStore {
         formatter
             .debug_struct("CredentialStore")
             .field("directory", &self.directory.path())
-            .field("pairs", &self.records.len())
+            .field("credentials", &self.records.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
+}
+
+fn suffix(value: &str) -> String {
+    let start = value.len().saturating_sub(4);
+    value.get(start..).unwrap_or_default().to_owned()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -498,35 +449,32 @@ impl std::fmt::Debug for CredentialStore {
 struct PersistedStore {
     version: u32,
     credentials: Vec<PersistedCredential>,
-    #[serde(default)]
-    registrations: Registrations,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PersistedCredential {
     id: CredentialId,
+    carriers: Vec<Carrier>,
+    fake_prefixes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     real: Option<String>,
-    fake: String,
-    scope_ids: BTreeSet<ScopeId>,
-    retired_scope_ids: BTreeSet<ScopeId>,
+    fakes: Vec<Fake>,
+    retired_fakes: Vec<Fake>,
 }
 
-fn encode(
-    records: &Records,
-    registrations: &Registrations,
-) -> Result<Vec<u8>, CredentialStoreError> {
+fn encode(records: &Records) -> Result<Vec<u8>, CredentialStoreError> {
     let persisted = PersistedStore {
         version: STORE_VERSION,
-        registrations: registrations.clone(),
         credentials: records
             .iter()
             .map(|(id, record)| PersistedCredential {
                 id: id.clone(),
+                carriers: record.carriers.clone(),
+                fake_prefixes: record.format.prefixes().to_vec(),
                 real: record.real.as_ref().map(|real| real.expose().to_owned()),
-                fake: record.fake.clone(),
-                scope_ids: record.scope_ids.clone(),
-                retired_scope_ids: record.retired_scope_ids.clone(),
+                fakes: record.fakes.clone(),
+                retired_fakes: record.retired_fakes.clone(),
             })
             .collect(),
     };
@@ -534,21 +482,21 @@ fn encode(
         .map_err(|_| CredentialStoreError::Corrupt("cannot encode store".into()))
 }
 
-fn decode(bytes: &[u8]) -> Result<(Records, Registrations), CredentialStoreError> {
-    #[derive(Deserialize)]
-    struct Version {
-        version: u32,
-    }
-    // Inspect the version before interpreting record fields; v1 has no migration path.
-    let version: Version = serde_json::from_slice(bytes).map_err(|error| parse_error(&error))?;
-    if version.version != STORE_VERSION {
+fn decode(bytes: &[u8]) -> Result<Records, CredentialStoreError> {
+    // Parser messages can quote input fragments, so report only the position.
+    let persisted: PersistedStore = serde_json::from_slice(bytes).map_err(|error| {
+        CredentialStoreError::Corrupt(format!(
+            "invalid store file at line {} column {}",
+            error.line(),
+            error.column()
+        ))
+    })?;
+    if persisted.version != STORE_VERSION {
         return Err(CredentialStoreError::Corrupt(format!(
             "unsupported store version {}",
-            version.version
+            persisted.version
         )));
     }
-    let persisted: PersistedStore =
-        serde_json::from_slice(bytes).map_err(|error| parse_error(&error))?;
     let mut records = Records::new();
     for credential in persisted.credentials {
         let real = credential
@@ -557,99 +505,71 @@ fn decode(bytes: &[u8]) -> Result<(Records, Registrations), CredentialStoreError
             .transpose()
             .map_err(|_| CredentialStoreError::Corrupt("invalid real value".into()))?;
         let record = Record {
+            carriers: credential.carriers,
+            format: FakeFormat::with_prefixes(credential.fake_prefixes),
             real,
-            fake: credential.fake,
-            scope_ids: credential.scope_ids,
-            retired_scope_ids: credential.retired_scope_ids,
+            fakes: credential.fakes,
+            retired_fakes: credential.retired_fakes,
         };
-        if records.insert(credential.id, record).is_some() {
-            return Err(CredentialStoreError::Corrupt(
-                "duplicate pair identifier".into(),
-            ));
+        if records.insert(credential.id.clone(), record).is_some() {
+            return Err(CredentialStoreError::Corrupt(format!(
+                "duplicate credential {}",
+                credential.id
+            )));
         }
     }
-    validate(&records, &persisted.registrations)?;
-    Ok((records, persisted.registrations))
+    validate(&records)?;
+    Ok(records)
 }
 
-fn validate_registration_key(key: &str) -> Result<(), CredentialStoreError> {
-    if key.len() != 64
-        || !key
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(CredentialStoreError::Invalid {
-            field: "registration key",
-            reason: "must be 64 lowercase hexadecimal characters",
-        });
-    }
-    Ok(())
-}
-
-fn parse_error(error: &serde_json::Error) -> CredentialStoreError {
-    // Parser messages can echo values; expose only their position.
-    CredentialStoreError::Corrupt(format!(
-        "invalid store file at line {} column {}",
-        error.line(),
-        error.column()
-    ))
-}
-
-fn validate(records: &Records, registrations: &Registrations) -> Result<(), CredentialStoreError> {
-    let corrupt = |reason: &str| CredentialStoreError::Corrupt(reason.into());
-    if records.len() > MAX_FAKES_TOTAL {
-        return Err(corrupt("global pair limit exceeded"));
-    }
-    if registrations.len() > MAX_REGISTRATIONS {
-        return Err(corrupt("source registration limit exceeded"));
-    }
-    for (key, ids) in registrations {
-        validate_registration_key(key).map_err(|_| corrupt("invalid registration key"))?;
-        if !(1..=MAX_REGISTRATION_PAIRS).contains(&ids.len()) {
-            return Err(corrupt("registration must contain 1..=256 pairs"));
-        }
-        if ids.iter().any(|id| !records.contains_key(id)) {
-            return Err(corrupt("registration references an unknown pair"));
-        }
-    }
-    let mut fakes = BTreeSet::new();
-    let mut per_scope: BTreeMap<&ScopeId, Vec<&Secret>> = BTreeMap::new();
+/// Checks the invariants the gateway relies on for deterministic fake/real mapping.
+fn validate(records: &Records) -> Result<(), CredentialStoreError> {
+    let corrupt = |reason: &str| Err(CredentialStoreError::Corrupt(reason.into()));
+    let mut fake_values = std::collections::HashSet::new();
+    let mut per_scope: BTreeMap<&ScopeId, usize> = BTreeMap::new();
     for record in records.values() {
-        validate_token_value(&record.fake, "fake value")
-            .map_err(|_| corrupt("invalid fake value"))?;
-        if !fakes.insert(record.fake.as_str()) {
-            return Err(corrupt("fake value is not unique"));
+        if record.carriers.is_empty() {
+            return corrupt("credential without carriers");
         }
-        match &record.real {
-            Some(real) => {
-                validate_pair(real.expose(), &record.fake)
-                    .map_err(|_| corrupt("invalid real/fake pair"))?;
-                if !record.retired_scope_ids.is_empty() {
-                    return Err(corrupt("live pair has retired memberships"));
-                }
-                for scope in &record.scope_ids {
-                    let reals = per_scope.entry(scope).or_default();
-                    if reals.iter().any(|other| other.matches(real.expose())) {
-                        return Err(corrupt("Scope has multiple fakes for one real"));
-                    }
-                    reals.push(real);
-                }
-            }
-            None if !record.scope_ids.is_empty() => {
-                return Err(corrupt("retired pair has active memberships"));
-            }
-            None => {}
+        if record.real.is_none() && !record.fakes.is_empty() {
+            return corrupt("retired credential has active fakes");
         }
+        let mut scope_ids = std::collections::HashSet::new();
+        for fake in &record.fakes {
+            if !scope_ids.insert(&fake.scope_id) {
+                return corrupt("credential has two active fakes for one scope");
+            }
+            *per_scope.entry(&fake.scope_id).or_default() += 1;
+        }
+        for fake in record.fakes.iter().chain(&record.retired_fakes) {
+            if validate_token_value(&fake.value, "fake value").is_err() {
+                return corrupt("invalid fake value");
+            }
+            if !fake_values.insert(fake.value.as_str()) {
+                return corrupt("fake value is not unique");
+            }
+        }
+    }
+    if fake_values.len() > MAX_FAKES_TOTAL {
+        return corrupt("global fake limit exceeded");
     }
     if per_scope
         .values()
-        .any(|reals| reals.len() > MAX_ACTIVE_FAKES_PER_SCOPE)
+        .any(|count| *count > MAX_ACTIVE_FAKES_PER_SCOPE)
     {
-        return Err(corrupt("per-scope active pair limit exceeded"));
+        return corrupt("per-scope fake limit exceeded");
     }
-    for real in records.values().filter_map(|record| record.real.as_ref()) {
-        if fakes.iter().any(|fake| real.matches(fake)) {
-            return Err(corrupt("real value collides with a managed fake"));
+    let reals: Vec<&Secret> = records
+        .values()
+        .filter_map(|record| record.real.as_ref())
+        .collect();
+    for (index, real) in reals.iter().enumerate() {
+        if reals[index + 1..]
+            .iter()
+            .any(|other| other.matches(real.expose()))
+            || fake_values.iter().any(|fake| real.matches(fake))
+        {
+            return corrupt("real value collides with another managed value");
         }
     }
     Ok(())

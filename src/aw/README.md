@@ -52,25 +52,23 @@ The sec-core Provider can check locally resolved Skills before Qoder SDK and Qwe
 Core works independently. Install and enable the corresponding Providers for security checks and compression.
 Tool result replacement is limited to authorized slots, and native Agent permission checks retain precedence.
 
-Use `aw instance attach --agent TARGET --pid PID` to attach a supported native process, then `aw instance update --agent TARGET` to apply policy while idle. Both commands default to `aw.yaml` in the current directory; see the [command reference](../../docs/user-guide/en/aw/cli-reference.md#aw-instance-attach-and-aw-instance-update) for prerequisites and explicit configuration selection.
-
-Use `aw instance setup` or an application-owned `prepare` call to retain native startup across the eight supported Adapters after one-time integration. Native readiness confirms registration, and `aw instance update` applies policy between completed tasks. SDK factories and QwenPaw use task Scopes; Qoder, OpenClaw and Hermes use native request boundaries. See [independent instances](../../docs/developer-guide/en/aw/deployment/independent-instances.md).
+Explicit Adapters can use `aw instance` to register, confirm Ready, query and release application-owned instances on an existing same-user daemon. The initial contract uses fixed configuration and ordinary Qoder SDK / QwenPaw routes; language packages and native factory migration are separate work. See [independent instances](../../docs/developer-guide/en/aw/deployment/independent-instances.md).
 
 ## Hook support matrix
 
 ✓ Declared with contract coverage; × unsupported. Generated from the [regression manifest](tests/regression-matrix.json). See [capability support](../../docs/user-guide/en/aw/capabilities.md) for native replacement limits, MCP and policy updates.
 
 <!-- aw-regression-matrix:start -->
-| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.before` / `replace_input` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `openclaw` | ✓ | ✓ | × | ✓ | ✓ | × | × |
-| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `openclaw` | ✓ | ✓ | ✓ | ✓ | × | × |
+| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 <!-- aw-regression-matrix:end -->
 
 Qoder CLI also checks the native `UserPromptSubmit` text through `input.submit`; see [Qoder input checks](../../docs/developer-guide/en/aw/agents/qoder.md#check-user-submissions).
@@ -123,7 +121,3 @@ See [Contributing](CONTRIBUTING.md) for source builds, tests and CI entrypoints.
 `aw config add-native-source` records native source references without opening or
 rewriting their files. The shared loader API retains native configuration and
 reports admission separately from activation; see [configuration](../../docs/user-guide/en/aw/configuration.md#record-native-configuration-sources).
-
-Local audit consumers can use `aw audit-export` to read retained metadata after
-service shutdown. See [audit export](../../docs/user-guide/en/aw/cli-reference.md#aw-audit-export)
-for the owned state directory and bounded read interface.

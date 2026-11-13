@@ -45,11 +45,10 @@ for the remaining host restrictions.
 |---|---|---|
 | Schema compression | 47.3% on reference fixture | Compresses OpenAI Function Calling tool schemas |
 | Content-aware response compression | workload-dependent | Routes successful JSON through `JsonCompressor`; complete candidates retain all fields and empty values; those saving at least 15% take priority, while recoverable record arrays can be reduced to a 32-record base budget |
-| Build-log compression | workload-dependent | Cleans SGR colors and reduces retrievable routine progress in recognized Cargo, pytest, unittest/Django, npm/Jest, pnpm, Go, Make/C, and generic command logs; pnpm also compacts recognized notification, dependency-list and decorative-bar layouts without recovery, retaining all task-relevant facts |
+| Build-log compression | workload-dependent | Cleans terminal control output and reduces repeated routine progress in recognized Cargo, pytest, unittest/Django, npm/Jest, Go, Make/C, and generic command logs while preserving diagnostics, summaries, phases, and stack traces |
 | Search path sharing | workload-dependent | Enabled by default: API search records and recognized native shell searches share consecutive paths; pure path lists from commands or APIs share a directory prefix, retaining every received path and byte. File reads skip the path-list strategy. Disable with `TOKENLESS_SEARCH_PATH_SHARING_ENABLED=0` or SDK `search_path_sharing_enabled=False` |
 | Git Diff context cropping | workload-dependent | Enabled by default; disable with `TOKENLESS_DIFF_COMPRESSION_ENABLED=0` or SDK `diff_compression_enabled=False`; preserves all changed lines, reduces context per hunk, and provides original recovery. Stable whole-Agent token savings have not been established |
-| Mixed-content region compression | workload-dependent | Opt in with `TOKENLESS_MIXED_CONTENT_ENABLED=1`; recognizes explicitly bounded typed regions — fenced `json`/`csv`/`tsv` code blocks and bracket-balanced bare JSON documents — in tool outputs that are neither a whole structured document nor handled by another domain, and compresses each region with the same compressor and policy as the standalone route. Surrounding text stays byte-for-byte, a region the compressor rejects stays verbatim, and a JSON region that selects TOON has its fence label updated. Disabled by default |
-| HTML page rendering | workload-dependent | Enabled by default: renders complete HTML documents from commands or APIs as Markdown, removes only enumerated non-content elements (scripts, styles, navigation, banners, footers, asides, form controls, media embeds) with counts in the view header, and provides original recovery; HTML inside JSON string values from the same sources is rendered in place, keeping the JSON structure, when no visible text, link target, form state, or meaning carried by styles, attributes, line breaks, list numbers or table headers would be lost and no text hidden on screen would be revealed; disable with `TOKENLESS_HTML_EXTRACTION_ENABLED=0` or SDK `html_extraction_enabled=False`; file reads pass through |
+| HTML page rendering | workload-dependent | Enabled by default: renders complete HTML documents from commands or APIs as Markdown, removes only enumerated non-content elements (scripts, styles, navigation, banners, footers, asides, form controls, media embeds) with counts in the view header, and provides original recovery; disable with `TOKENLESS_HTML_EXTRACTION_ENABLED=0` or SDK `html_extraction_enabled=False`; file reads pass through |
 | CSV/TSV table compression | workload-dependent | Preserves every cell and row/column order while compacting quoting and record separators; returns the original when there is no benefit. No row sampling or Stash writes. Requires a text replacement slot; file reads pass through |
 | Reversible compression (stash) | — | Omitted record collections and bounded values are stashed; supported agents run `tokenless retrieve HASH` or call their static Retrieve Tool when full data is needed |
 | TOON context compression | 17.6% on reference response | Encodes JSON to TOON format for LLMs; since TOON spec v4.4 this also covers nested record arrays and objects keyed by ID, which previously encoded larger than compact JSON |
@@ -67,16 +66,6 @@ for the remaining host restrictions.
 | DeepSeek Harness plugin | — | RTK retry suggestions ✅, Response compression ✅, Marker-command recovery ✅, Environment-error attribution ✅ |
 | AgentScope framework integration | — | Schema ✅, RTK ✅, Response ✅, TOON ✅, Retrieval ✅ |
 | Zero runtime deps | — | Pure Rust, single static binary |
-
-pnpm layout compaction retains notification text, all dependency facts, package counts
-and completion information without recovery; only omitted progress needs Stash/retrieve.
-Warnings, scripts and unknown text stop pnpm parsing for the remaining suffix.
-This does not exempt `pnpm install` from PreTool RTK rewriting: it applies only to raw
-output reaching PostTool under the existing ownership rules. See
-[pnpm install output](../../docs/user-guide/en/tokenless/index.md#pnpm-install-output).
-Layout compaction and progress reduction can coexist and share the existing
-`build_log_reduction` label; `recoverability` distinguishes `lossless` layout-only
-output from `retrievable` omissions. Protocol v2 and SDK enums remain unchanged.
 
 The schema, response, and TOON figures above are isolated results on the
 repository's committed reference fixtures; they are neither a

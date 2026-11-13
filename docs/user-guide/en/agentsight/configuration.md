@@ -243,7 +243,7 @@ of command-line tokens with `*` wildcards; all tokens must match in order.
 matches a process whose first argument contains `node` and whose next argument contains `claude`.
 
 The shipped file covers Hermes, Codex, Runloop, cosh (`Cosh`), cosh-ng (`CoshNG`), OpenClaw,
-Claude Code, Qwen Code, AgentScope, and Qoder CLI — 36 rules in total.
+Claude Code, Qwen Code, AgentScope, and Qoder CLI — 35 rules in total.
 
 Qoder CLI rules cover native/versioned binaries and Node launchers. Its legacy
 `*.qoder.sh` gateway is included in `https`. Existing configurations retain their
@@ -380,10 +380,7 @@ systemctl is-active agentsight.service
 sudo agentsight summary --last 1
 ```
 
-Malformed JSON does not stop `trace` or `serve`. AgentSight logs the parse error, leaves the file
-unchanged without creating a schema backup, and uses the embedded defaults. `serve` also disables
-the optional `tokenless_api` integration. Other startup errors, including invalid `tokenless_api`
-settings, can still stop the service. Check the file and startup warnings with:
+If the service refuses to come back, the file is usually invalid JSON:
 
 ```bash
 python3 -m json.tool /etc/agentsight/config.json > /dev/null && echo "JSON ok"
@@ -401,6 +398,5 @@ passed to `agentsight serve --config /etc/agentsight/config.json`:
 
 The credential file holds the same Bearer token configured for `tokenless stats serve`.
 Use a private connection or HTTPS proxy. The server reads the file at startup; restart
-AgentSight after changing it. Credentials stay on the backend. Invalid `tokenless_api`
-settings fail startup; malformed JSON in the shared file follows the fallback above.
-Omitting this setting preserves the existing local database integration.
+AgentSight after changing it. Credentials stay on the backend. Invalid configuration
+fails startup. Omitting this setting preserves the existing local database integration.

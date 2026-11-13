@@ -162,7 +162,7 @@ impl DaemonDispatcher {
             );
         }
         match method_id {
-            MethodId::IntentPropose | MethodId::IntentProposeCommand => {
+            MethodId::IntentPropose => {
                 crate::intent::handle(request_id, peer, control, self.intent.as_deref(), request)
             }
             MethodId::Authorization(method) => crate::authorization::handle(
@@ -259,10 +259,7 @@ impl RequestDispatcher for DaemonDispatcher {
                 .map(std::time::Duration::from_millis);
         }
         let request: DaemonRequest = serde_json::from_slice(payload).ok()?;
-        if matches!(
-            request.method.as_str(),
-            method::INTENT_PROPOSE | method::INTENT_PROPOSE_COMMAND
-        ) {
+        if request.method == method::INTENT_PROPOSE {
             return Some(std::time::Duration::from_secs(35));
         }
         if method::GATEWAY_METHODS.contains(&request.method.as_str()) {
@@ -385,11 +382,9 @@ pub(crate) fn new_request_id() -> RequestId {
 
 /// Intent's own byte budget, counted exactly as the transport budget counts the stripped LF.
 fn exceeds_intent_budget(payload: &[u8], method_name: &str) -> bool {
-    matches!(
-        method_name,
-        method::INTENT_PROPOSE | method::INTENT_PROPOSE_COMMAND
-    ) && payload.len() + usize::from(payload.last() != Some(&b'\n'))
-        > asc_daemon_protocol::intent::INTENT_REQUEST_BYTES
+    method_name == method::INTENT_PROPOSE
+        && payload.len() + usize::from(payload.last() != Some(&b'\n'))
+            > asc_daemon_protocol::intent::INTENT_REQUEST_BYTES
 }
 
 pub(crate) fn write_response<T: serde::Serialize>(

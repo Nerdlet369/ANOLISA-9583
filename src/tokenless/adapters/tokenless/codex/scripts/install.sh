@@ -32,17 +32,7 @@
 
 set -euo pipefail
 
-USER_HOME="${HOME:-}"
-case "$USER_HOME" in
-    /*) ;;
-    *) USER_HOME="" ;;
-esac
-
-PREFIX="${TOKENLESS_INSTALL_PREFIX:-${USER_HOME:+$USER_HOME/.local}}"
-if [[ -z "$PREFIX" ]]; then
-    echo "[tokenless] TOKENLESS_INSTALL_PREFIX or HOME must be set" >&2
-    exit 1
-fi
+PREFIX="${TOKENLESS_INSTALL_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
 CODEX_BIN="${CODEX_BIN:-}"
 MARKETPLACE_NAME="anolisa-tokenless"
@@ -61,18 +51,9 @@ PLUGIN_SRC="$(cd "$SCRIPT_DIR/.." && pwd)"   # codex/ directory
 # resolved before Phase 1: the dry-run preview needs them to name what it would
 # do, and a host without the tokenless binary must see the build it would run.
 CODEX_BIN="$(resolve_codex)"
-MARKETPLACE_ROOT="${XDG_DATA_HOME:-}"
-if [[ -z "$MARKETPLACE_ROOT" && -n "$USER_HOME" ]]; then
-    MARKETPLACE_ROOT="$USER_HOME/.local/share"
-fi
-MARKETPLACE_DIR=""
-AGENTS_DIR=""
-PLUGIN_LINK=""
-if [[ -n "$MARKETPLACE_ROOT" ]]; then
-    MARKETPLACE_DIR="$MARKETPLACE_ROOT/anolisa/codex-marketplace"
-    AGENTS_DIR="$MARKETPLACE_DIR/.agents/plugins"
-    PLUGIN_LINK="$MARKETPLACE_DIR/tokenless"
-fi
+MARKETPLACE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/anolisa/codex-marketplace"
+AGENTS_DIR="$MARKETPLACE_DIR/.agents/plugins"
+PLUGIN_LINK="$MARKETPLACE_DIR/tokenless"
 
 # ---------------------------------------------------------------------------
 # Phase 1 — Ensure tokenless binary is available
@@ -121,9 +102,7 @@ if [ "$DRY_RUN" = "1" ]; then
     else
         echo "DRY-RUN: keep the existing tokenless binary ${TOKENLESS_BIN}"
     fi
-    if [[ -n "$CODEX_BIN" && -z "$MARKETPLACE_DIR" ]]; then
-        echo "DRY-RUN: neither HOME nor XDG_DATA_HOME is set, so the registration and the marketplace directory are both skipped"
-    elif [[ -n "$CODEX_BIN" ]]; then
+    if [[ -n "$CODEX_BIN" ]]; then
         echo "DRY-RUN: mkdir -p ${AGENTS_DIR}"
         echo "DRY-RUN: ln -sfn ${PLUGIN_SRC} ${PLUGIN_LINK}"
         echo "DRY-RUN: write ${AGENTS_DIR}/marketplace.json"
@@ -165,11 +144,6 @@ fi
 # 2a. Create marketplace directory layout in a user-local location so
 # non-root users can run this script even when the plugin source tree
 # is installed under a root-owned prefix (e.g. /usr/share/anolisa).
-if [[ -z "$MARKETPLACE_DIR" ]]; then
-    echo "[tokenless] neither HOME nor XDG_DATA_HOME is set — cannot create the codex marketplace directory; skipping plugin registration."
-    echo "[tokenless] Set HOME or XDG_DATA_HOME, then run: codex plugin add ${PLUGIN_ID}"
-    exit 0
-fi
 mkdir -p "$AGENTS_DIR"
 
 # Symlink plugin at marketplace root (codex resolves plugin paths relative to

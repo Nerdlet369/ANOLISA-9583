@@ -9,14 +9,110 @@ use asc_policy_types::{
 };
 use std::os::unix::fs::PermissionsExt;
 
-mod common;
-use common::{Repository, private_dir, seed, transition};
+#[test]
+fn repository_retains_sqlite_wal_locks_like_a_plain_connection() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = private_dir();
+    let holds_deadman_lock = |name: &str| {
+        let inode = std::fs::metadata(dir.path().join(name))
+            .unwrap()
+            .ino()
+            .to_string();
+        let pid = std::process::id().to_string();
+        let locks = std::fs::read_to_string("/proc/locks").unwrap();
+        locks.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.len() >= 8
+                && fields[1] == "POSIX"
+                && fields[4] == pid
+                && fields[5].rsplit(':').next() == Some(inode.as_str())
+                && fields[6].parse::<u64>().is_ok_and(|start| start <= 128)
+                && (fields[7] == "EOF" || fields[7].parse::<u64>().is_ok_and(|end| end >= 128))
+        })
+    };
+    let plain = rusqlite::Connection::open(dir.path().join("plain.db")).unwrap();
+    plain
+        .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE example(value);")
+        .unwrap();
+    assert!(
+        holds_deadman_lock("plain.db-shm"),
+        "positive control must retain the WAL deadman lock"
+    );
+
+    let repository = SqlitePolicyRepository::open(&dir.path().join("policy-state.db")).unwrap();
+    repository.check_writable().unwrap();
+    // An unrelated close() must not release SQLite's cross-process protection.
+    assert!(
+        holds_deadman_lock("policy-state.db-shm"),
+        "Repository file validation released SQLite's WAL deadman lock"
+    );
+    let initial = seed(&repository);
+    let applying = transition(&repository, &initial, BindingStatus::Applying);
+    assert_eq!(
+        repository
+            .get_binding_state(&initial.binding.spec.binding_id)
+            .unwrap(),
+        Some(applying)
+    );
+    assert!(
+        holds_deadman_lock("policy-state.db-shm"),
+        "Repository reads and writes must preserve SQLite's WAL deadman lock"
+    );
+}
+
+trait Repository: PapRepository + BindingStateRepository + BindingReconcileCatalog {}
+impl<T: PapRepository + BindingStateRepository + BindingReconcileCatalog> Repository for T {}
 
 fn each(test: impl Fn(&dyn Repository)) {
     let dir = private_dir();
     test(&SqlitePolicyRepository::open(&dir.path().join("policy-state.db")).unwrap());
 }
 
+fn seed(repo: &dyn Repository) -> BindingStateSnapshot {
+    let binding: PreparedBinding = serde_json::from_str(include_str!(
+        "../../asc-policy-types/tests/fixtures/prepared-binding.json"
+    ))
+    .unwrap();
+    repo.put_policy(&binding.policy).unwrap();
+    repo.put_scope(&PreparedScope {
+        scope_id: binding.scope.scope_id.clone(),
+        selector: binding.scope.selector.clone(),
+        policy_snapshots: vec![binding.policy],
+        owner_uid: None,
+        status: ScopeStatus::Active,
+    })
+    .unwrap();
+    let intent = repo
+        .sync_scope_instances(&binding.scope.scope_id, &[binding.scope.process])
+        .unwrap()
+        .remove(0);
+    assert_eq!(intent.status_version, 1);
+    repo.get_binding_state(&intent.spec.binding_id)
+        .unwrap()
+        .unwrap()
+}
+fn transition(
+    repo: &dyn Repository,
+    current: &BindingStateSnapshot,
+    phase: BindingStatus,
+) -> BindingStateSnapshot {
+    let mut next = current.clone();
+    next.binding.status = phase.into();
+    let result = repo
+        .compare_exchange_binding_state(current, &BindingStateWrite::new(next))
+        .unwrap();
+    let WriteResult::Applied(receipt) = result else {
+        panic!("unexpected result {result:?}");
+    };
+    let next = repo
+        .get_binding_state(&current.binding.spec.binding_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.status_version, Some(next.status_version));
+    assert!(receipt.status_applied);
+    next
+}
 fn target() -> TargetRef {
     TargetRef {
         route: "test".into(),
@@ -210,45 +306,14 @@ fn credential_scope_release_responsibility_survives_restart_with_zero_or_last_bi
         ))
         .unwrap();
         let mut policy = fixture.policy;
-        let source = asc_policy_types::cedar::CedarPolicySource {
-            schema: asc_policy_types::cedar::CedarSchemaReference {
-                schema_id: ResourceId::new("seccore.system").unwrap(),
-                revision: Revision::new(2).unwrap(),
-            },
-            text: r#"@modify("inject_credential")
-@real_token_file("/secure/github-real")
-@fake_token_file("/secure/github-fake")
-@inject_header("Authorization")
-@inject_format("auto")
-@response_rewrite("true")
-permit(principal, action == SecCore::Action::"network.send", resource is SecCore::HttpEndpoint)
-when { resource.host == "api.github.com" && context.input.method == "GET" && context.input.path like "/repos/*" };"#.into(),
-        };
-        policy.credential_bindings = asc_policy_cedar::credential_rules(&source)
-            .unwrap()
-            .into_iter()
-            .map(|rule| asc_policy_types::policy::CredentialBinding {
-                rule_id: rule.rule_id,
-                pair_id: "pair-one".into(),
-            })
-            .collect();
-        policy.template = asc_policy_types::authoring::PolicySource::Cedar(source);
-        for binding in [None, Some("unrelated-rule")] {
-            let mut invalid = policy.clone();
-            if let Some(rule_id) = binding {
-                invalid.credential_bindings[0].rule_id = rule_id.into();
-            } else {
-                invalid.credential_bindings.clear();
-            }
-            assert!(matches!(
-                repo.put_policy(&invalid),
-                Err(PapError::InvalidCedar(_))
-            ));
-            assert_eq!(
-                repo.get_policy(&policy.policy_id, policy.revision),
-                Err(PapError::NotFound)
-            );
-        }
+        policy.template = asc_policy_types::authoring::PolicySource::SecCore(
+            serde_json::from_value(serde_json::json!({
+                "specVersion":"0.1","rules":[{"effect":"allow","category":"network","action":"use_credential",
+                    "target":{"type":"http_request","credentialId":"github","scheme":"https",
+                        "host":"api.github.com","path":"/repos/**","methods":["GET"],"responseRewrite":"buffered"}}]
+            }))
+            .unwrap(),
+        );
         repo.put_policy(&policy).unwrap();
         let scope = PreparedScope {
             scope_id: fixture.scope.scope_id,
@@ -454,6 +519,13 @@ fn keyset_recovery_does_not_skip_rows_deleted_on_previous_page() {
     }
     assert_eq!(removed, 8);
     assert_eq!(repo.list_scopes(10, 0).unwrap().total, 1);
+}
+
+fn private_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap()
 }
 
 #[test]
@@ -1089,10 +1161,10 @@ fn cedar_snapshots_reload_after_update_delete_and_restart_using_their_saved_sche
         unreachable!()
     };
     assert!(pst(&invalid).is_ok());
-    invalid.schema.revision = Revision::new(3).unwrap();
+    invalid.schema.revision = Revision::new(2).unwrap();
     assert!(matches!(
         pst(&invalid),
-        Err(asc_policy_cedar::CedarError::UnsupportedSchema { revision: 3, .. })
+        Err(asc_policy_cedar::CedarError::UnsupportedSchema { revision: 2, .. })
     ));
 }
 

@@ -7,7 +7,13 @@ macro_rules! startup_ids {
             StartupAdapterLine,
             StartupCwdLine,
             StartupCommandsLine,
+            StartupHooksNoneSummary,
+            StartupHooksCompletedSummary,
+            StartupHooksFindingsHeading,
             StartupHooksRustProjectFinding,
+            StartupHooksNoFindings,
+            StartupHooksReadOnlyNote,
+            StartupSwitchHint,
         );
     };
 }
@@ -34,18 +40,5 @@ macro_rules! startup_upgrade_ids {
             StartupUpgradeHintLine,
             StartupUpgradeNoticeTitle,
         );
-    };
-}
-
-macro_rules! startup_guidance_ids {
-    ($next:ident, $remaining:tt, $($ids:ident,)*) => {
-        $next!($remaining, $($ids,)* StartupAiDisabledLine,);
-    };
-}
-
-macro_rules! startup_welcome_ids {
-    ($next:ident, $remaining:tt, $($ids:ident,)*) => {
-        $next!($remaining, $($ids,)* StartupHelpLabel, StartupAskOnlyLine,
-            StartupEcsAuthHintLine, StartupConfigureAuthHintLine,);
     };
 }

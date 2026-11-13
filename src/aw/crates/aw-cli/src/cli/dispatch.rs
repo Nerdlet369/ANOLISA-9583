@@ -1,7 +1,7 @@
 //! Execute one active Adapter plan behind a stable native callback command.
 
 use super::{
-    adapter::{Adapter, HookBinding, HookOutput},
+    adapter::{Adapter, HookOutput},
     bridge, Arguments, Result,
 };
 use aw_adapter::{
@@ -24,34 +24,20 @@ pub(super) fn invoke(args: &Arguments, adapter: &dyn Adapter) -> Result<HookOutp
     let event = args.required("--event")?;
     let transport_deadline = Instant::now() + Duration::from_secs(59);
     let input = super::hook::read_input(transport_deadline)?;
-    invoke_bound(adapter, binding, event, input, transport_deadline)
-}
-
-pub(super) fn invoke_bound(
-    adapter: &dyn Adapter,
-    binding: HookBinding,
-    event: &str,
-    input: Vec<u8>,
-    transport_deadline: Instant,
-) -> Result<HookOutput> {
     let raw: Value = serde_json::from_slice(&input)?;
     let context = binding.native_context();
     let normalized = adapter.normalize(&context, event, &raw)?;
-    let client = Client::from_identity(&binding.socket, binding.binding.identity.clone());
+    let client = Client::connect(&binding.socket, transport_deadline)?;
+    if client.identity() != &binding.binding.identity {
+        return Err("stale stable bridge binding".into());
+    }
     let id = &binding.binding.instance_id;
-    let key = if event == "input.submit" {
-        normalized["session_id"]
+    let key = aw_adapter::reload::tool_key(
+        normalized["session_id"].as_str().ok_or("missing session")?,
+        normalized["tool"]["call_id"]
             .as_str()
-            .ok_or("missing session")?
-            .to_owned()
-    } else {
-        aw_adapter::reload::tool_key(
-            normalized["session_id"].as_str().ok_or("missing session")?,
-            normalized["tool"]["call_id"]
-                .as_str()
-                .ok_or("missing tool call")?,
-        )?
-    };
+            .ok_or("missing tool call")?,
+    )?;
     // QwenPaw tracks the actual tool generator in middleware, including its
     // finally path. Qoder exposes separate native before/terminal callbacks.
     let lifecycle = |phase| -> Result<()> {
@@ -92,16 +78,7 @@ pub(super) fn invoke_bound(
         if plan.groups.is_empty() {
             // An empty policy still consumes the native correlation. A replay
             // after adding steps must not acquire a new execution budget.
-            let close = if event == "input.submit" {
-                Operation::CloseInputEvent {
-                    instance_id: id.clone(),
-                    session_id: normalized["session_id"]
-                        .as_str()
-                        .ok_or("missing session")?
-                        .into(),
-                    turn_id: normalized["turn_id"].as_str().ok_or("missing turn")?.into(),
-                }
-            } else {
+            client.call(
                 Operation::CloseHookEvent {
                     instance_id: id.clone(),
                     event: event.into(),
@@ -113,9 +90,9 @@ pub(super) fn invoke_bound(
                         .as_str()
                         .ok_or("missing tool call")?
                         .into(),
-                }
-            };
-            client.call(close, deadline)?;
+                },
+                deadline,
+            )?;
             let mut output = adapter.reply(false);
             if plan.observe
                 && client
@@ -133,7 +110,7 @@ pub(super) fn invoke_bound(
                     b"AW observation failed; query instance audit for metadata\n",
                 );
             }
-            return native_reply(&binding.adapter, event, output, plan.skill_check.as_deref());
+            return Ok(output);
         }
         let handle: EventHandle = serde_json::from_value(client.call(
             Operation::OpenHookEvent {
@@ -145,8 +122,7 @@ pub(super) fn invoke_bound(
         )?)?;
         let mut outputs = Vec::new();
         let mut blocked = false;
-        let mut groups = plan.groups.into_iter().peekable();
-        while let Some(group) = groups.next() {
+        for group in plan.groups {
             let results = std::thread::scope(|scope| {
                 let children = group
                     .iter()
@@ -163,19 +139,14 @@ pub(super) fn invoke_bound(
                                 deadline,
                             );
                             match result {
-                                Ok(output) => (output, false),
+                                Ok(output) => output,
                                 Err(_) => {
-                                    let block = matches!(event, "input.submit" | "tool.before")
-                                        && step.on_error == "block";
-                                    let mut output = adapter.reply(block);
-                                    if block {
-                                        // Keep native JSON vetoes visible to group scheduling.
-                                        output.exit = NativeExit::Code(2);
-                                    }
+                                    let mut output = adapter
+                                        .reply(event == "tool.before" && step.on_error == "block");
                                     output.stderr.extend_from_slice(
                                         b"AW step failed; query instance audit for metadata\n",
                                     );
-                                    (output, true)
+                                    output
                                 }
                             }
                         })
@@ -188,15 +159,11 @@ pub(super) fn invoke_bound(
             })?;
             blocked |= results
                 .iter()
-                .any(|(output, _)| matches!(output.exit, NativeExit::Code(2)));
-            let failed = results.iter().any(|(_, failed)| *failed);
-            outputs.extend(results.into_iter().map(|(output, _)| output));
-            if matches!(event, "input.submit" | "tool.before")
+                .any(|output| matches!(output.exit, NativeExit::Code(2)));
+            outputs.extend(results);
+            if event == "tool.before"
                 && blocked
-                && matches!(
-                    binding.adapter.as_str(),
-                    "qwenpaw" | "qoder-sdk" | "openclaw" | "hermes"
-                )
+                && matches!(binding.adapter.as_str(), "qwenpaw" | "qoder-sdk")
             {
                 let close = if binding.adapter == "qoder-sdk" {
                     Operation::CloseHookEvent {
@@ -205,50 +172,18 @@ pub(super) fn invoke_bound(
                         session_id: raw["session_id"].as_str().ok_or("missing session")?.into(),
                         call_id: raw["tool_use_id"].as_str().ok_or("missing call")?.into(),
                     }
-                } else if groups.peek().is_some() || failed {
+                } else {
                     Operation::CloseEvent {
                         event_id: handle.event_id.clone(),
                         instance_id: id.clone(),
                     }
-                } else {
-                    // Only successful final calls establish automatic completion.
-                    break;
                 };
-                if let Err(error) = client.call(close, Instant::now() + Duration::from_secs(2)) {
-                    if binding.adapter == "qoder-sdk"
-                        || !matches!(error, aw_service::Error::Rejected(ref code) if code == "unknown_event")
-                    {
-                        // Cleanup uncertainty must retain the native veto and its reason.
-                        if let Some(output) = outputs.last_mut() {
-                            output.stderr.extend_from_slice(
-                                b"AW event cleanup failed; query instance audit for metadata\n",
-                            );
-                        }
-                    }
-                }
+                client.call(close, deadline)?;
                 break;
             }
         }
-        native_reply(
-            &binding.adapter,
-            event,
-            aw_adapter::reload::combine(&binding.adapter, outputs)?,
-            plan.skill_check.as_deref(),
-        )
+        Ok(aw_adapter::reload::combine(&binding.adapter, outputs)?)
     })();
-    if event == "input.submit" {
-        client.call(
-            Operation::CloseInputEvent {
-                instance_id: id.clone(),
-                session_id: normalized["session_id"]
-                    .as_str()
-                    .ok_or("missing session")?
-                    .into(),
-                turn_id: normalized["turn_id"].as_str().ok_or("missing turn")?.into(),
-            },
-            Instant::now() + Duration::from_secs(2),
-        )?;
-    }
     let denied = result.as_ref().is_ok_and(aw_adapter::reload::denied);
     if binding.adapter == "qoder"
         && (event == "tool.after" || (event == "tool.before" && (denied || result.is_err())))
@@ -293,58 +228,4 @@ fn step_output(
         &step.on_error,
         output,
     )?)
-}
-
-fn native_reply(
-    adapter: &str,
-    event: &str,
-    mut output: HookOutput,
-    skill: Option<&str>,
-) -> Result<HookOutput> {
-    if adapter == "hermes" && event == "tool.before" {
-        let mut value: Value = if output.stdout.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_slice(&output.stdout)?
-        };
-        // Only the admitted plan determines source pinning. Native/Provider replies
-        // cannot disable a configured checker or invent a trusted Skill receipt.
-        value
-            .as_object_mut()
-            .ok_or("invalid Hermes callback reply")?
-            .insert("aw_skill_check".into(), serde_json::json!(skill));
-        output.stdout = serde_json::to_vec(&value)?;
-    }
-    Ok(output)
-}
-
-#[cfg(test)]
-#[path = "dispatch/closure_tests.rs"]
-mod closure_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn only_the_active_plan_controls_hermes_skill_admission() {
-        for (supplied, active) in [(json!(null), Some("block")), (json!("block"), None)] {
-            let output = native_reply(
-                "hermes",
-                "tool.before",
-                HookOutput {
-                    exit: NativeExit::Code(0),
-                    stdout: serde_json::to_vec(&json!({"aw_skill_check":supplied})).unwrap(),
-                    stderr: vec![],
-                },
-                active,
-            )
-            .unwrap();
-            assert_eq!(
-                serde_json::from_slice::<Value>(&output.stdout).unwrap()["aw_skill_check"],
-                json!(active)
-            );
-        }
-    }
 }

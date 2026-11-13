@@ -3,7 +3,6 @@
 mod confirmation;
 mod discovery;
 mod dispatch;
-mod instance;
 mod inventory;
 mod management;
 mod package;
@@ -71,10 +70,8 @@ enum Command {
     Update(Update),
     /// Query service and optional Provider views; may execute view commands
     Inspect(Inspect),
-    /// Read one public audit page without connecting to the control socket
-    AuditExport(AuditExport),
-    /// Attach a native process, update policy, or exchange application-owned instance JSON
-    Instance(instance::Instance),
+    /// Register, confirm, query or release an application-owned instance using stdin JSON
+    Instance(Instance),
     /// Send one operation from stdin JSON to an existing service
     Request(Request),
     /// Serve the command Provider stdin/stdout protocol
@@ -308,12 +305,10 @@ struct Scope {
 }
 
 pub(crate) fn run(arguments: Vec<String>) -> crate::cli::Result<crate::cli::Exit> {
-    if let Some(protocol) = arguments.first().filter(|name| {
-        matches!(
-            name.as_str(),
-            "hook" | "bridge" | "scope" | "qoder-bootstrap"
-        )
-    }) {
+    if let Some(protocol) = arguments
+        .first()
+        .filter(|name| matches!(name.as_str(), "hook" | "bridge" | "scope"))
+    {
         // Native callbacks have fail-closed replies and exit codes even for
         // malformed arguments. Keep their exact parser and protocol boundary.
         return crate::runtime(
@@ -363,14 +358,14 @@ pub(crate) fn run(arguments: Vec<String>) -> crate::cli::Result<crate::cli::Exit
 }
 
 #[derive(Args, Debug, PartialEq)]
-struct AuditExport {
-    /// Existing private service state directory; reads its retained journal
-    #[arg(long, value_name = "ABS_DIR")]
-    state_dir: String,
-    /// Bounded JSON request file; does not accept a control operation
-    #[arg(long, value_name = "ABS_FILE")]
-    request: String,
-    /// Cooperative read deadline in milliseconds
-    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+struct Instance {
+    /// Unix socket of an already running same-user daemon
+    #[arg(long)]
+    socket: String,
+    /// Discover protocol and generation; does not read stdin or create an instance
+    #[arg(long)]
+    connect: bool,
+    /// Total input, connection and request budget
+    #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(1..=60000))]
     timeout_ms: u64,
 }

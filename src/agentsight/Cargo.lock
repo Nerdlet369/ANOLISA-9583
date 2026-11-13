@@ -216,7 +216,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentsight"
-version = "0.16.1"
+version = "0.16.0"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -337,7 +337,6 @@ name = "agentsight-enforcer"
 version = "0.1.0"
 dependencies = [
  "actplane-ifc-compiler",
- "agentsight-audit",
  "agentsight-enforcement-protocol",
  "anyhow",
  "ctrlc",
@@ -1677,7 +1676,6 @@ name = "ebpf-ifc-engine"
 version = "0.1.9"
 dependencies = [
  "aya",
- "libbpf-rs",
  "libbpf-sys",
  "libc",
  "log 0.4.33",
@@ -4866,7 +4864,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

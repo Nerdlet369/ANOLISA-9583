@@ -15,8 +15,6 @@ pub(super) struct HookBinding {
     pub reloadable: bool,
     #[serde(default)]
     pub resident_policy_reload: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub registration: Option<super::native::Registration>,
     pub binding: Binding,
     pub socket: PathBuf,
     pub cwd: PathBuf,

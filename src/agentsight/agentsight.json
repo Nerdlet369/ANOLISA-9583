@@ -317,10 +317,6 @@
       {
         "rule": ["*node*", "*qodercli*"],
         "agent_name": "QoderCLI"
-      },
-      {
-        "rule": ["*node*", "*", "*qodercli*"],
-        "agent_name": "QoderCLI"
       }
     ],
     "deny": [

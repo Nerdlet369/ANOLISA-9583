@@ -73,11 +73,8 @@ struct Filter {
 impl QueryClient {
     /// Load the optional server-only configuration and its credential file.
     ///
-    /// Malformed shared JSON returns `Ok(None)` after a warning because the primary
-    /// configuration loader has already fallen back to the embedded defaults.
-    ///
     /// # Errors
-    /// Rejects unsafe endpoints, invalid credentials, invalid Tokenless settings, and file failures.
+    /// Rejects unsafe endpoints, invalid credentials, and configuration/file failures.
     pub(super) fn from_config_path(path: Option<&Path>) -> Result<Option<Self>, QueryError> {
         let Some(path) = path else {
             return Ok(None);
@@ -91,15 +88,8 @@ impl QueryClient {
         // too, or the server crash-loops on a file the rest of the process
         // loads happily.
         let raw = String::from_utf8(std::fs::read(path)?).map_err(|_| QueryError::Invalid)?;
-        let config: Value = match serde_json::from_str(crate::config::strip_leading_bom(&raw)) {
-            Ok(config) => config,
-            Err(error) => {
-                log::warn!(
-                    "Failed to load config {path:?}: invalid JSON: {error}; using embedded defaults; Tokenless integration disabled"
-                );
-                return Ok(None);
-            }
-        };
+        let config: Value = serde_json::from_str(crate::config::strip_leading_bom(&raw))
+            .map_err(|_| QueryError::Invalid)?;
         let Some(config) = config.get("tokenless_api").filter(|value| !value.is_null()) else {
             return Ok(None);
         };

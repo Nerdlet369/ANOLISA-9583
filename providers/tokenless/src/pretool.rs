@@ -1,4 +1,4 @@
-//! Translate admitted Tokenless command rewrites without granting native authorization.
+//! Translate Tokenless rewrites into a fresh native attempt, never an authorization.
 
 use serde_json::{json, Value};
 use std::path::Path;
@@ -25,15 +25,7 @@ pub(super) fn reply(request: &Value, result: &Value) -> Result<Value, &'static s
         {
             Ok(neutral)
         }
-        Some(action @ ("block_and_suggest" | "replace_arguments"))
-            if result["output_optimization"] == "rtk" =>
-        {
-            let rewrite = request["allowed_effects"]
-                .as_array()
-                .is_some_and(|effects| effects.iter().any(|effect| effect == "replace_input"));
-            if (action == "replace_arguments") != rewrite {
-                return Err("invalid_pretool_result");
-            }
+        Some("block_and_suggest") if result["output_optimization"] == "rtk" => {
             let args = &result["arguments"];
             let _command = args["command"]
                 .as_str()
@@ -43,11 +35,6 @@ pub(super) fn reply(request: &Value, result: &Value) -> Result<Value, &'static s
             compared["command"] = original["command"].clone();
             if compared != *original || args == original {
                 return Err("invalid_pretool_result");
-            }
-            if rewrite {
-                return Ok(
-                    json!({"input_digest":request["input_digest"],"effects":[{"type":"replace_input","input":args,"reason_code":"tokenless_rewritten"}]}),
-                );
             }
             // A new model tool call must traverse every before Hook and the
             // native permission path. This text never changes or executes input.

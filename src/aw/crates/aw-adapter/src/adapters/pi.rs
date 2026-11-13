@@ -17,7 +17,6 @@ pub(crate) struct Pi;
 struct Prepared {
     input: LaunchInput,
     version: String,
-    strict_output: bool,
     application: PathBuf,
 }
 
@@ -58,13 +57,12 @@ impl Adapter for Pi {
                 application.clone().into_os_string(),
             ],
         )?;
-        let (sdk, core) = result
-            .strip_prefix("AW Pi SDK ")
-            .and_then(|value| value.split_once(':'))
-            .ok_or("Pi SDK metadata probe did not identify both required packages")?;
-        let version = crate::version::reported(sdk, "Pi SDK")?;
-        let core_version = crate::version::reported(core, "Pi Core")?;
-        let strict_output = version == "0.84.2" && core_version == "0.84.2";
+        let version = crate::version::reported(
+            result
+                .strip_prefix("AW Pi SDK ")
+                .ok_or("Pi SDK metadata probe did not identify the required packages")?,
+            "Pi SDK",
+        )?;
         input
             .command
             .environment
@@ -73,7 +71,6 @@ impl Adapter for Pi {
             input,
             application,
             version,
-            strict_output,
         }))
     }
     fn normalize(&self, binding: &NativeContext, event: &str, native: &Value) -> Result<Value> {
@@ -134,11 +131,9 @@ impl PreparedLaunch for Prepared {
     fn capabilities(&self) -> Capabilities {
         let mut capabilities =
             super::super::adapter::catalog::PI.capabilities(&self.version, "sdk");
-        if self.strict_output {
-            capabilities
-                .failure_actions
-                .insert("tool.after".into(), vec!["withhold_result".into()]);
-        }
+        capabilities
+            .failure_actions
+            .insert("tool.after".into(), vec!["withhold_result".into()]);
         capabilities
     }
     fn validate_steps(&self, steps: &[AdmittedStep]) -> Result<()> {
@@ -151,7 +146,7 @@ impl PreparedLaunch for Prepared {
             .to_owned();
         let ready = context.files.directory().join("pi-ready.json");
         let observe = adapter::observation_enabled(&self.input.document, &self.input.target);
-        let config=context.files.write("pi-hooks.json",&serde_json::to_vec(&json!({"executable":context.executable,"binding":context.binding_path,"ready_path":ready,"ready_token":token,"observation_enabled":observe,"resident_policy_reload":self.input.options.resident_policy_reload,"replacement_step":events.get("tool.after").and_then(|route|route.replacement_step.as_ref()),"hooks":hooks}))?)?;
+        let config=context.files.write("pi-hooks.json",&serde_json::to_vec(&json!({"executable":context.executable,"binding":context.binding_path,"ready_path":ready,"ready_token":token,"observation_enabled":observe,"replacement_step":events.get("tool.after").and_then(|route|route.replacement_step.as_ref()),"hooks":hooks}))?)?;
         let entrypoint = context.files.write(
             "pi-entrypoint.mjs",
             include_bytes!("../../native/pi/entrypoint.mjs"),
@@ -210,7 +205,7 @@ impl PreparedLaunch for Prepared {
         })
     }
 }
-pub(crate) fn routes(
+fn routes(
     document: &Value,
     steps: &[AdmittedStep],
 ) -> Result<(BTreeMap<String, HookEvent>, Vec<Value>)> {
@@ -232,10 +227,6 @@ pub(crate) fn routes(
         }
         for step in &selected {
             let mut hook = json!({"event":event,"step":step.step_id,"on_error":step.on_error,"budget_ms":budget});
-            if matches!(&step.execution, aw_core::admission::StepExecution::Provider { effects, .. } if effects.iter().any(|effect| effect == "replace_input"))
-            {
-                hook["replace_input"] = json!(true);
-            }
             if event == "input.submit"
                 && matches!(&step.execution, aw_core::admission::StepExecution::Provider { operation, .. } if operation == "check_skill")
             {

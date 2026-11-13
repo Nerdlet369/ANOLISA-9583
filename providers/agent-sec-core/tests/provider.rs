@@ -16,9 +16,6 @@ mod prompt;
 #[path = "provider/user_pii.rs"]
 mod user_pii;
 
-#[path = "provider/startup.rs"]
-mod startup;
-
 fn config() -> Value {
     json!({"version":1,"mode":"block","tools":{
         "shell":{"language":"bash","input_pointer":"/command"}

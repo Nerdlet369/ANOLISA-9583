@@ -9,9 +9,10 @@ mod error;
 mod plan;
 
 pub use compile::compile_scope;
+pub use credential::{credential_environment_variables, github_credential_spec};
 pub use error::PlanError;
 pub use plan::{
-    CredentialPath, Method, PLAN_FORMAT, Plan, PlanFormat, PolicySource, RequestMatch, Rule,
+    Method, PLAN_FORMAT, Plan, PlanFormat, PolicySource, RequestMatch, ResponseRewrite, Rule,
     RuleSource, Scheme,
 };
 

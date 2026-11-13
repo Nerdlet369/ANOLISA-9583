@@ -23,10 +23,7 @@ use std::{
 mod binding;
 mod dispatch;
 mod evidence;
-mod expired;
-pub(crate) mod facts;
 mod hooks;
-mod input;
 mod invocations;
 mod limits;
 mod policy;
@@ -38,8 +35,6 @@ mod submissions;
 const MAX_STEPS: usize = 64;
 
 struct Instance {
-    run: Option<crate::RunOutcome>,
-    native_facts: Arc<Mutex<facts::NativeFacts>>,
     bytes: Vec<u8>,
     context: ProcessContext,
     reload: Option<policy::Reload>,
@@ -86,7 +81,6 @@ pub(crate) struct Runtime {
     pub(crate) audit: Audit,
     instances: Mutex<BTreeMap<String, Option<Instance>>>,
     events: Mutex<BTreeMap<String, EventEntry>>,
-    expired: Mutex<BTreeMap<String, expired::ExpiredEvent>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     next: AtomicU64,
     calls: AtomicU64,
@@ -96,19 +90,8 @@ pub(crate) struct Runtime {
 }
 
 impl Runtime {
-    #[cfg(test)]
     pub(crate) fn new(
         bytes: Vec<u8>,
-        directory: &Path,
-        stopped: Arc<AtomicBool>,
-    ) -> Result<Arc<Self>> {
-        let configuration = aw_config::Validator::new()?.parse(&bytes)?;
-        Self::from_configuration(bytes, &configuration, directory, stopped)
-    }
-
-    pub(crate) fn from_configuration(
-        bytes: Vec<u8>,
-        configuration: &aw_config::Configuration,
         directory: &Path,
         stopped: Arc<AtomicBool>,
     ) -> Result<Arc<Self>> {
@@ -120,8 +103,8 @@ impl Runtime {
             AdmissionError::Configuration(error) => error.into(),
             AdmissionError::Rejected(_) => rejected("binding_preflight"),
         })?;
-        let contexts = evidence::Contexts::new(configuration)?;
-        let limits = limits::Limits::from_configuration(configuration)?;
+        let contexts = evidence::Contexts::new(&bytes)?;
+        let limits = limits::Limits::parse(&bytes)?;
         Ok(Arc::new(Self {
             contexts,
             limits,
@@ -138,7 +121,6 @@ impl Runtime {
             audit: Audit::new(directory)?,
             instances: Mutex::new(BTreeMap::new()),
             events: Mutex::new(BTreeMap::new()),
-            expired: Mutex::new(BTreeMap::new()),
             workers: Mutex::new(Vec::new()),
             next: AtomicU64::new(1),
             calls: AtomicU64::new(0),
@@ -232,12 +214,12 @@ impl Runtime {
             .instances
             .lock()
             .map_err(|_| rejected("state_poisoned"))?;
+        self.check_scope_owner(&instance_id)?;
         let instance = instances
             .get(&instance_id)
             .and_then(Option::as_ref)
             .filter(|instance| !instance.closing)
             .ok_or_else(|| rejected("unknown_or_draining_instance"))?;
-        let execution = self.event_execution(instance, &instance_id, &value)?;
         if native_input.is_none() {
             let mut state = instance
                 .invocations
@@ -267,14 +249,7 @@ impl Runtime {
             if cancelled.load(Ordering::Acquire) {
                 return Err(rejected("event_cancelled"));
             }
-            if events.len()
-                + self
-                    .expired
-                    .lock()
-                    .map_err(|_| rejected("state_poisoned"))?
-                    .len()
-                >= self.limits.events
-            {
+            if events.len() >= self.limits.events {
                 return Err(self.overload("event_limit"));
             }
             events.insert(
@@ -294,8 +269,8 @@ impl Runtime {
             let automatic = native_input.is_some();
             let association = evidence::association(&host.capabilities().adapter, &value, native_input.as_deref());
             let candidate = value.clone();
-            let ordered = automatic && ((value["name"] == "tool.before" && host.steps().iter().any(|step| step.event == "tool.before" && matches!(&step.execution, aw_core::admission::StepExecution::Provider { effects, .. } if effects.iter().any(|effect| effect == "replace_input")))) || aw_adapter::completion::ordered_after(&host.capabilities().adapter, &value,
-                host.steps().iter().any(|step| step.event == "tool.after" && step.execution.replaces_result())));
+            let ordered = automatic && aw_adapter::completion::ordered_after(&host.capabilities().adapter, &value,
+                host.steps().iter().any(|step| step.event == "tool.after" && step.execution.replaces_result()));
             let event = match native_input {
                 Some(input) => host.hook_event(value, input, deadline, &cancelled),
                 None => host.event(value, deadline, &cancelled),
@@ -306,7 +281,7 @@ impl Runtime {
                         "generation":runtime.identity.generation,"config_revision":host.revision(),
                         "binding_id":host.target(),"instance_id":instance_id,"event_id":thread_key,
                         "adapter":host.capabilities().adapter,
-                    }), &candidate, association.clone(), event.deadline(), &policy).and_then(|seed| context.initialize(seed));
+                    }), &candidate, association, event.deadline(), &policy).and_then(|seed| context.initialize(seed));
                     let candidate_revision = match seed {
                         Ok(revision) => revision,
                         Err(error) => {
@@ -317,14 +292,8 @@ impl Runtime {
                         }
                     };
                     let handle = EventHandle { event_id: thread_key.clone(), instance_id: instance_id.clone(), steps: event.steps().map(|step| step.step_id.clone()).collect(), candidate_revision };
-                    let public_event = runtime.hook_fact(&thread_key, &host, &instance_id, &candidate, &association);
-                    let claimed = public_event.and_then(|public_event| {
-                        let mut plan = json!({"kind": "event", "identity": runtime.identity,
-                            "instance_id": instance_id, "binding_id": host.target(), "policy_revision":host.revision(), "host_event_id": event.id(), "event": metadata});
-                        if let Some(event) = public_event { plan["executionEvent"] = event; }
-                        else { plan["publicProjectionGap"] = json!("aw.native_metadata_unavailable"); }
-                        runtime.audit.claim(&thread_key, plan)
-                    });
+                    let claimed = runtime.audit.claim(&thread_key, json!({"kind": "event", "identity": runtime.identity,
+                        "instance_id": instance_id, "binding_id": host.target(), "policy_revision":host.revision(), "host_event_id": event.id(), "event": metadata}));
                     match claimed {
                         Ok(_) => {
                             if let Err(error) = context.seed().ok_or_else(|| rejected("context_not_ready")).and_then(|seed| runtime.observe_seed(&instance_id, seed)) {
@@ -332,7 +301,7 @@ impl Runtime {
                             } else {
                                 let _ = ready.send(Ok(json!(handle)));
                             }
-                            runtime.event_loop((&thread_key, &instance_id, &candidate), &event, (&cancelled, &context, execution.as_ref()), receiver, automatic, ordered);
+                            runtime.event_loop((&thread_key, &instance_id), &event, (&cancelled, &context), receiver, automatic, ordered);
                         }
                         Err(error) => { let _ = ready.send(Err(error)); }
                     }
@@ -377,16 +346,15 @@ impl Runtime {
 
     fn event_loop(
         &self,
-        identity: (&str, &str, &Value),
+        identity: (&str, &str),
         event: &aw_host::Event<'_>,
-        lease: (&AtomicBool, &evidence::Cell, Option<&policy::Execution>),
+        lease: (&AtomicBool, &evidence::Cell),
         receiver: Receiver<Job>,
         automatic: bool,
         ordered: bool,
     ) {
-        let (key, instance_id, original) = identity;
-        let rewrite = Mutex::new(input::State::default());
-        let (cancelled, context, execution) = lease;
+        let (key, instance_id) = identity;
+        let (cancelled, context) = lease;
         let mut close = None;
         let mut claimed = BTreeSet::new();
         let mut panicked = false;
@@ -438,10 +406,6 @@ impl Runtime {
                             let _ = reply.send(Err(rejected("event_cancelled")));
                             continue;
                         }
-                        if let Err(error) = self.check_execution_admission(instance_id, execution) {
-                            let _ = reply.send(Err(error));
-                            continue;
-                        }
                         let Some(index) = event
                             .steps()
                             .position(|candidate| candidate.step_id == step)
@@ -469,7 +433,6 @@ impl Runtime {
                         }
                         let completed_steps = &completed_steps;
                         let completed_mask = &completed_mask;
-                        let rewrite = &rewrite;
                         children.push(scope.spawn(move || {
                             let _guard = CallGuard(&self.calls);
                             let result = (|| {
@@ -484,49 +447,19 @@ impl Runtime {
                                     }
                                     thread::sleep(std::time::Duration::from_millis(2));
                                 }
-                                self.check_execution_admission(instance_id, execution)?;
+                                self.check_scope_owner(instance_id)?;
                                 self.audit
                                     .append(key, json!({"phase": "started", "step_id": step}))?;
                                 // Queueing and durable audit can outlive the admitted owner.
-                                self.check_execution_admission(instance_id, execution)?;
-                                let mut invocation = match native_environment {
+                                self.check_scope_owner(instance_id)?;
+                                let invocation = match native_environment {
                                     Some(environment) => {
                                         event.invoke_with_native_environment(&step, &environment)
                                     }
                                     None => event.invoke(&step),
                                 }
                                 .map_err(|_| rejected("step_rejected"))?;
-                                let replacement = match self.adopt_input(
-                                    instance_id,
-                                    event,
-                                    original,
-                                    &mut invocation,
-                                    rewrite,
-                                    index + 1 == step_count as usize,
-                                ) {
-                                    Ok(input) => input,
-                                    Err(_) => {
-                                        invocation.result = Err(aw_host::Failure::Protocol(
-                                            aw_provider::Error::Invalid(
-                                                "input replacement adoption failed",
-                                            ),
-                                        ));
-                                        invocation.failure_action =
-                                            Some(aw_host::FailureAction::Block);
-                                        None
-                                    }
-                                };
-                                let (record, mut result) = audit::invocation(invocation);
-                                if result["effects"].as_array().is_some_and(|effects| {
-                                    effects
-                                        .iter()
-                                        .any(|effect| effect["type"] == "replace_input")
-                                }) {
-                                    result["effects"] = serde_json::json!([]);
-                                }
-                                if let Some(input) = replacement {
-                                    result["input_replacement"] = input;
-                                }
+                                let (record, result) = audit::invocation(invocation);
                                 self.audit.append(key, record)?;
                                 Ok(result)
                             })();
@@ -543,27 +476,11 @@ impl Runtime {
             }
         });
         context.close();
-        let status = if panicked {
-            "worker_failed"
-        } else if close.is_some() {
-            "closed"
-        } else if automatic && completed_steps.load(Ordering::Acquire) == step_count {
-            "completed"
-        } else if self.stopped.load(Ordering::Acquire) {
-            "stopped"
-        } else if Instant::now() >= event.deadline() {
-            "expired"
-        } else {
-            "cancelled"
-        };
-        let completed = self.retire_event(
-            (key, instance_id),
-            event,
-            &claimed,
-            status,
-            automatic,
-            execution,
-        );
+        let completed = self.audit.append(key, json!({"phase": "closed", "status": if panicked { "worker_failed" } else if close.is_some() { "closed" } else if automatic && completed_steps.load(Ordering::Acquire) == step_count { "completed" } else if self.stopped.load(Ordering::Acquire) { "stopped" } else if Instant::now() >= event.deadline() { "expired" } else { "cancelled" }, "attempted_steps": claimed.len()}));
+        // Release registry membership before acknowledging close so immediate unbind works.
+        if let Ok(mut events) = self.events.lock() {
+            events.remove(key);
+        }
         if let Some(reply) = close {
             let _ =
                 reply.send(completed.map(|evidence| json!({"closed": true, "evidence": evidence})));
@@ -585,10 +502,6 @@ impl Runtime {
             }
             // Dropping registry senders wakes idle event workers; in-flight handlers are bounded.
             events.clear();
-            self.expired
-                .lock()
-                .map_err(|_| rejected("state_poisoned"))?
-                .clear();
         }
         if shutdown {
             self.stop_observations()?;

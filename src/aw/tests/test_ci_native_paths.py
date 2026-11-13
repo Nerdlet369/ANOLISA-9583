@@ -87,8 +87,6 @@ class NativePathTests(GateFixture):
                     ), patch.object(
                         claude, "check_callback_payloads", new=AsyncMock()
                     ), patch.object(
-                        claude, "check_input_replacement", new=AsyncMock()
-                    ), patch.object(
                         claude, "check_preserved_callbacks", new=AsyncMock()
                     ), patch.object(
                         claude.signal, "signal"

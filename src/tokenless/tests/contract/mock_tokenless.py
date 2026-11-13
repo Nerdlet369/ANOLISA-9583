@@ -35,9 +35,7 @@ def envelope(request: dict, result: dict) -> None:
     print(
         json.dumps(
             {
-                "protocol_version": {"old_response": 1, "future_response": 3}.get(
-                    os.environ.get("TOKENLESS_MOCK_BEHAVIOR"), 2
-                ),
+                "protocol_version": 2,
                 "operation": request["operation"],
                 "attribution": request["attribution"],
                 "result": result,
@@ -183,11 +181,7 @@ def main() -> int:
             log.write(" ".join(sys.argv[1:]) + "\n")
 
     behavior = os.environ.get("TOKENLESS_MOCK_BEHAVIOR", "applied")
-    if sys.argv[1:] not in (["compress"], ["compress", "--rewrite-child"]):
-        return 2
-    if "--rewrite-child" in sys.argv and (
-        os.name != "posix" or os.getpgrp() != os.getpid()
-    ):
+    if sys.argv[1:] != ["compress"]:
         return 2
     raw = sys.stdin.read()
 
@@ -212,8 +206,6 @@ def main() -> int:
         or set(request) != {"protocol_version", "operation", "attribution", "input"}
     ):
         return 3
-    if behavior in {"old_response", "future_response"}:
-        behavior = "applied"
     if request["operation"] == "before_model":
         return respond_before_model(request, behavior)
     if request["operation"] == "pre_tool":

@@ -15,8 +15,9 @@ async function bounded(promise, milliseconds) {
   } finally { clearTimeout(timer); }
 }
 
-export async function runWorker(app, sdk, core, args, versions = {}) {
-  const startup = configuration();
+export async function runWorker(app, sdk, core, args) {
+  if (configuration().observation_enabled)
+    throw new Error("AW resident Pi does not support AgentSight evidence");
   const active = new Map();
   const closed = new WeakSet();
   let poisoned = false;
@@ -43,7 +44,6 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
         } finally {
           await record.scope.close();
         }
-        if (startup.resident_policy_reload) await record.scope.release();
         active.delete(session);
         closed.add(session);
       } catch (error) {
@@ -59,24 +59,8 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
     const scope = new Scope();
     const cwd = realpathSync(options.cwd ?? process.cwd());
     let session;
-    let record;
     try {
-      let policy = startup;
-      if (startup.resident_policy_reload) await scope.reserve();
-      await scope.open(cwd, { ...process.env, ...(options.environment ?? {}) },
-        { deferAcknowledgement: Boolean(startup.resident_policy_reload) });
-      if (startup.resident_policy_reload) {
-        const snapshot = await scope.policy();
-        if (!snapshot || !/^[a-f0-9]{64}$/.test(snapshot.policy_revision))
-          throw new Error("AW resident policy handoff is malformed");
-        policy = configuration({ ...startup, hooks: snapshot.hooks,
-          replacement_step: snapshot.events?.["tool.after"]?.replacement_step ?? null });
-        if (policy.hooks.some(hook => hook.on_error === "withhold_result") &&
-            (versions.sdk !== "0.84.2" || versions.core !== "0.84.2"))
-          throw new Error("AW strict Pi output requires pi-coding-agent and pi-agent-core 0.84.2");
-      }
-      if (typeof app.run === "function" && policy.hooks.some(hook => hook.event === "input.submit"))
-        throw new Error("AW Pi input.submit requires the runWorker factory");
+      await scope.open(cwd, { ...process.env, ...(options.environment ?? {}) });
       const result = await app.createSession({ ...options, cwd, sdk, args });
       session = result?.session;
       if (!(session instanceof sdk.AgentSession) || !(session.agent instanceof core.Agent)
@@ -85,7 +69,7 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
       if (poisoned) throw new Error("AW worker requires restart after failed task cleanup");
       const nativeStream = session.agent.streamFunction;
       if (typeof nativeStream !== "function") throw new Error("Pi requires its public model stream function");
-      const bridge = installSessionBridge(session, scope, policy);
+      const bridge = installSessionBridge(session, scope);
       scope.onFailure = () => session.agent.abort();
       const stream = bridge.model(nativeStream);
       // The SDK may schedule a final turn after abort; gate before any model transport.
@@ -97,11 +81,11 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
           return stream(...arguments_);
         }, writable: false,
       });
-      const inputHooks = policy.hooks.filter(hook => hook.event === "input.submit");
+      const inputHooks = configuration().hooks.filter(hook => hook.event === "input.submit");
       const checked = inputHooks.length > 0;
       const skillChecks = inputHooks.some(hook => hook.skill_check === true);
       const boundary = checked ? inputBoundary(session) : null;
-      record = { scope, bridge, closing: null, pending: null, inputAbort: null,
+      const record = { scope, bridge, closing: null, pending: null, inputAbort: null,
         abort: session.abort.bind(session), dispose: session.dispose.bind(session) };
       if (checked) {
         const agentAbort = session.agent.abort.bind(session.agent);
@@ -166,7 +150,6 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
         record.pending = pending;
         return pending.finally(() => { if (record.pending === pending) record.pending = null; });
       }, configurable: false, writable: false });
-      if (startup.resident_policy_reload) await scope.acknowledge();
       active.set(session, record);
       return { ...result, close: () => closeSession(session) };
     } catch (error) {
@@ -174,17 +157,10 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
       try {
         try {
           if (session instanceof sdk.AgentSession && !active.has(session)) {
-            // Late ACK failures occur after public methods have been fenced.
-            await bounded((async () => {
-              await (record ? record.abort() : session.abort());
-              record?.bridge.dispose();
-              await (record ? record.dispose() : session.dispose());
-            })(), 12000);
+            await bounded(session.abort(), 12000);
+            session.dispose();
           }
-        } finally {
-          await scope.close();
-        }
-        if (startup.resident_policy_reload) await scope.release();
+        } finally { await scope.close(); }
       } catch (cleanupError) {
         poisoned = true;
         throw new AggregateError([error, cleanupError], "AW task creation cleanup failed");
@@ -199,8 +175,7 @@ export async function runWorker(app, sdk, core, args, versions = {}) {
     finally { await result.close(); }
   };
 
-  if (startup.resident_policy_reload) await new Scope().ready();
-  publishReady(startup);
+  publishReady();
   try {
     await app.runWorker({ args, createSession, closeSession, withSession });
   } finally {

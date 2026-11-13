@@ -57,7 +57,7 @@ class DeliveryTests(unittest.TestCase):
             "gateway/asc_gateway_addon.py",
             "gateway/asc_gateway_policy.py",
             "gateway/mitmproxy.provenance",
-            "gateway/github.cedar",
+            "gateway/github-policy.json",
         ):
             self.artifact(name, "fixture\n")
         self.artifact(
@@ -325,7 +325,7 @@ class DeliveryTests(unittest.TestCase):
         )
         self.assertTrue((stage / "srv/config/skillsec.json").is_file())
         gateway = stage / "opt/vendor/share/work/agent-sec-core/gateway"
-        self.assertTrue((gateway / "github.cedar").is_file())
+        self.assertTrue((gateway / "github-policy.json").is_file())
         gateway_unit = (stage / "srv/units/agent-sec-gateway.service").read_text()
         self.assertIn(
             "-s /opt/vendor/share/work/agent-sec-core/gateway/asc_gateway_addon.py",
@@ -505,7 +505,9 @@ class DeliveryTests(unittest.TestCase):
         self.assertTrue((stage / "etc/agent-sec/skillsec.json").is_file())
         self.assertTrue((stage / "usr/share/suite/agent-sec-core/LICENSE").is_file())
         self.assertTrue(
-            (stage / "usr/share/suite/agent-sec-core/gateway/github.cedar").is_file()
+            (
+                stage / "usr/share/suite/agent-sec-core/gateway/github-policy.json"
+            ).is_file()
         )
         self.assertTrue(
             (stage / "usr/lib/systemd/system/agent-sec-gateway.service").is_file()
@@ -648,7 +650,7 @@ class DeliveryTests(unittest.TestCase):
     def test_each_group_preflights_its_inputs_before_any_write(self):
         for group, name in (
             ("core", "v2/bin/agent-sec-daemon"),
-            ("core", "gateway/github.cedar"),
+            ("core", "gateway/github-policy.json"),
             ("plugins", "openclaw-plugin/dist/index.js"),
             ("skills", "skills/demo/SKILL.md"),
         ):

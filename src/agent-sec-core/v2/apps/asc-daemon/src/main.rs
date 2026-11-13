@@ -307,9 +307,6 @@ async fn run(
     if let Some(execution) = scope_execution.clone() {
         pap = pap.with_scope_execution(execution);
     }
-    if let Some(service) = gateway_service.as_ref() {
-        pap = pap.with_credential_registration(service.clone());
-    }
     // The sink clone has no registry, avoiding a worker/service ownership cycle.
     let discovery_registry = Arc::new(asc_daemon::ScopeDiscoveryRegistry::new(Arc::new(
         pap.clone(),

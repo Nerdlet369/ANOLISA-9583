@@ -44,11 +44,10 @@ def load_config_workspaces(config_file: Path) -> dict:
 def get_workspace_from_session(session_file: Path) -> str | None:
     """Read cwd from the first event of a session file."""
     try:
-        # Binary readline keeps decoding confined to the header itself.
-        with open(session_file, "rb") as f:
+        with open(session_file) as f:
             first_line = f.readline()
             if first_line.strip():
-                data = json.loads(first_line.decode("utf-8"))
+                data = json.loads(first_line)
                 cwd = data.get("cwd", "")
                 if isinstance(cwd, str) and cwd:
                     return cwd
@@ -242,14 +241,13 @@ def analyze_session_file(session_file: Path) -> tuple[str, dict, dict]:
             skill_paths = None
 
     try:
-        # Decode each physical line separately so corrupt bytes cannot abort the file.
-        with open(session_file, "rb") as f:
+        with open(session_file) as f:
             for line in f:
                 if not line.strip():
                     continue
                 try:
-                    data = json.loads(line.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                    data = json.loads(line)
+                except json.JSONDecodeError:
                     continue
 
                 # A non-object line (array/scalar) has no event fields; skip it
@@ -293,7 +291,7 @@ def analyze_session_file(session_file: Path) -> tuple[str, dict, dict]:
                                 by_skill[skill_name] += 1
                                 by_date[session_date][skill_name] += 1
 
-    except OSError as e:
+    except Exception as e:
         print(f"Error reading {session_file}: {e}")
 
     return workspace or "unknown", dict(by_skill), {k: dict(v) for k, v in by_date.items()}

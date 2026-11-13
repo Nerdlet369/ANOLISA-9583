@@ -52,25 +52,23 @@ sec-core Provider 可在 Qoder SDK 和 QwenPaw 加载本地 Skill 指令前校�
 core 可独立使用；安全检查与压缩需安装对应 Provider 并通过配置启用。
 工具结果替换限于获准的位置，Agent 的原生权限检查始终保留。
 
-使用 `aw instance attach --agent TARGET --pid PID` 接入受支持的原生进程，再用 `aw instance update --agent TARGET` 在空闲时应用策略。两个命令默认读取当前目录的 `aw.yaml`；前提和显式配置选择见[命令参考](../../docs/user-guide/zh/aw/cli-reference.md#aw-instance-attach-与-aw-instance-update)。
-
-八个受支持 Adapter 完成一次接入后，可通过 `aw instance setup` 或应用自管的 `prepare` 保留原生启动方式。原生就绪确认后完成登记，`aw instance update` 在任务完整结束后更新策略。SDK 工厂和 QwenPaw 使用任务 Scope，Qoder、OpenClaw、Hermes 使用原生请求边界。见[独立实例接入](../../docs/developer-guide/zh/aw/deployment/independent-instances.md)。
+显式 Adapter 可通过 `aw instance` 向已有同用户 daemon 独立登记、确认 Ready、查询和释放业务自管实例。首期支持 Qoder SDK / QwenPaw 普通路由，使用固定配置；语言包和原生工厂迁移另行交付。见[独立实例接入](../../docs/developer-guide/zh/aw/deployment/independent-instances.md)。
 
 ## Hook 支持矩阵
 
 ✓ 已声明且有契约测试覆盖，× 尚不支持。矩阵从[回归清单](tests/regression-matrix.json)生成。结果替换的原生限制与 MCP、更新范围见[完整能力表](../../docs/user-guide/zh/aw/capabilities.md)。
 
 <!-- aw-regression-matrix:start -->
-| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.before` / `replace_input` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `openclaw` | ✓ | ✓ | × | ✓ | ✓ | × | × |
-| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `openclaw` | ✓ | ✓ | ✓ | ✓ | × | × |
+| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 <!-- aw-regression-matrix:end -->
 
 Qoder CLI 也可通过 `input.submit` 检查原生 `UserPromptSubmit` 文本，见 [Qoder 输入检查](../../docs/developer-guide/zh/aw/agents/qoder.md#检查用户提交)。
@@ -118,6 +116,3 @@ Claude SDK 和 AgentScope SDK。CLI 使用原生 Hook 或插件，SDK 应用需�
 
 `aw config add-native-source` 记录原生来源引用，保留原文件。通用 loader API 保留原生
 配置，分别报告加载、准入与激活状态；用法见[配置说明](../../docs/user-guide/zh/aw/configuration.md#记录原生配置来源)。
-
-本地审计消费者可以使用 `aw audit-export` 在服务停止后读取保留的元数据。
-所属状态目录与有界读取接口见[审计导出](../../docs/user-guide/zh/aw/cli-reference.md#aw-audit-export)。

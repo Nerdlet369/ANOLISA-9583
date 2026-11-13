@@ -36,28 +36,6 @@ aw-provider-sec-core --cli ABSOLUTE_PATH --socket ABSOLUTE_PATH
 两个路径均必填且必须为绝对路径，`--help` 输出用法。进程从 stdin 读取一份以 EOF
 结束的 AW Provider JSON 请求，并向 stdout 写入一份响应。通常由 Host 启动。
 
-## 重叠后端与 Agent 启动
-
-在 Provider 的 `transport.argv` 末尾追加 `--wait-for-backend`，后端维护者即可让
-sec-core 与 Agent 并行启动。受保护工作开始前仍需完成 AW Service 就绪、策略准入和
-原生 Hook 安装。daemon 的启动和停止继续由外部维护者负责。
-
-```text
-aw-provider-sec-core --cli ABSOLUTE_PATH --socket ABSOLUTE_PATH --wait-for-backend
-```
-
-能力发现、配置校验和 `observe_tool` 不等待后端。扫描或 Skill 检查仅在配置的 socket
-尚未出现时等待，等待与实际检查共享本次调用的总预算。socket 出现不代表健康或安全判定：
-公开 CLI 仍会验证服务端身份、准备所需能力并执行检查；扫描不会重试。
-到期仍无 socket、路径类型错误及实际检查失败均返回 Provider 错误，由已配置的
-`on_error` 处理。未指定该参数时保留原有的直接 CLI 调用方式。
-
-无需后端的路径保留本地结果：配置为 `observe` 的未映射工具、未请求 Skill 的 Pi
-普通输入，以及空 Prompt 扫描均不等待。输入与效果校验也在等待后端之前完成。
-
-需要稳定首请求延迟时，在 App 初始化期间后台预热策略实际使用的能力，分别记录 App
-就绪、能力就绪和首个受保护响应。仅在首次请求中初始化会增加该请求的延迟。
-
 ## 外部后台与显式健康诊断
 
 Provider 包包含桥接程序、schema、示例和配置资源，不包含 `agent-sec-cli`、
@@ -93,25 +71,6 @@ AW 移除 sec-core 测试绕过环境变量。helper 非零退出、无效/不�
 AW 卸载只移除其管理的桥接程序/资源，保留独立管理的系统服务、`/etc`
 配置及后台数据。后台升级/移除交给拥有它的系统包；AW 暂无自动服务安装、
 升级或卸载衔接。
-
-## 预热输入扫描器
-
-目标使用 fast Prompt 和输入 PII 检查时，在接流前准备同一 daemon 中的 scanner。
-以下命令已在 sec-core 1.2.0 验证；使用其他发行版本时先检查实际 CLI 的帮助：
-
-```bash
-SEC_CORE_SOCKET=/run/agent-sec-core/daemon.sock
-agent-sec-cli --socket "$SEC_CORE_SOCKET" --timeout-ms 10000 \
-  scan-prompt warmup --mode fast
-printf 'AW startup readiness\n' | \
-  agent-sec-cli --socket "$SEC_CORE_SOCKET" --timeout-ms 10000 \
-  scan-pii --stdin --source user_input --format json
-```
-
-Prompt 预热须成功，无风险 PII 探针须返回 `verdict: pass`。daemon 健康响应只证明
-服务可达。沿用后端实际身份、Skill 目录和启动配置，预热连接 `transport.argv`
-使用的同一 socket。每次真实输入继续扫描；与框架已准入请求对象并行准备的方式见
-[接流前准备](../deployment/lifecycle.md#接流前准备)。
 
 ## 配置 Provider
 

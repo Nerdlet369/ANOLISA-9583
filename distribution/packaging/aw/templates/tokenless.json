@@ -51,25 +51,6 @@
       "steps": [
         {
           "id": "rewrite-command",
-          "match": {
-            "tools": [
-              "native:qoder:Bash"
-            ]
-          },
-          "provider": "tokenless",
-          "operation": "pre_tool",
-          "effects": [
-            "replace_input"
-          ],
-          "on_error": "block"
-        },
-        {
-          "id": "retry-command-openclaw",
-          "match": {
-            "tools": [
-              "native:openclaw:exec"
-            ]
-          },
           "provider": "tokenless",
           "operation": "pre_tool",
           "effects": [

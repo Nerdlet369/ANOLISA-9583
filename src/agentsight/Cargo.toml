@@ -34,7 +34,6 @@ env_filter = "1.0"
 fs2 = "0.4"
 futures = "0.3.32"
 libc = "0.2.155"
-libbpf-rs = "0.23.3"
 log = "0.4.22"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
@@ -54,7 +53,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 [package]
 name = "agentsight"
-version = "0.16.1"
+version = "0.16.0"
 edition = "2024"
 
 [features]
@@ -126,7 +125,7 @@ tempfile = { workspace = true }
 
 # Linux-only dependencies (eBPF, process inspection, HTTP parsing, etc.)
 [target.'cfg(target_os = "linux")'.dependencies]
-libbpf-rs = { workspace = true }
+libbpf-rs = "0.23.3"
 pagemap = "0.1.0"
 perf-event-open-sys = "4.0.0"
 procfs = "0.16.0"

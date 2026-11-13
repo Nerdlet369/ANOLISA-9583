@@ -504,7 +504,7 @@ pub enum AppliedOperation {
     SchemaCompression,
     /// ANSI SGR presentation sequences were removed from a build log.
     TerminalCleanup,
-    /// Reduced build-log layout or progress; [`PostToolResponse::recoverability`] states recovery guarantees.
+    /// Repeated build/test progress was reduced behind retrieval markers.
     BuildLogReduction,
     /// CSV/TSV quoting and record terminators changed with all cells retained.
     TabularCompaction,
@@ -514,9 +514,8 @@ pub enum AppliedOperation {
     SearchPathSharing,
     /// Unmodified Git diff context was reduced with the original available in Stash.
     DiffReduction,
-    /// HTML was rendered as Markdown with the original available in Stash: a page,
-    /// with enumerated non-content elements removed, or (with the `json` content
-    /// type) fragments inside JSON string values, with nothing visible removed.
+    /// An HTML page was rendered as Markdown with enumerated non-content elements
+    /// removed and the original available in Stash.
     HtmlExtraction,
     /// JSON was serialized compactly, optionally unwrapping one JSON string
     /// envelope, without omitting payload values.

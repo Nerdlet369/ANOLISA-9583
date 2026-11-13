@@ -61,10 +61,8 @@ TCP 7396。
 防误删不可用时，enforcer 启动日志会明确提示当前请求的 profile 与启用条件；
 SecCore 仍会以 `AGENTSIGHT_FILE_DELETE_GUARD_UNAVAILABLE` 拒绝 Apply，不会静默放行。
 
-启用前确认 `/sys/kernel/security/lsm` 包含 `bpf`。enforcer 与目标进程可以共享宿主初始
-PID namespace，也可以共享容器默认 PID namespace；同一容器内的目标无需设置 `hostPID: true` /
-`--pid=host`。`agent-file-guard` 提供文件防护 hook，但切换后不再提供
-`credential-exfiltration` 的凭证到网络阻断。
+启用前确认 `/sys/kernel/security/lsm` 包含 `bpf`，且 enforcer 运行在宿主初始 PID 命名空间。
+`agent-file-guard` 提供文件防护 hook，但切换后不再提供 `credential-exfiltration` 的凭证到网络阻断。
 不能把这两种 profile 当作可同时启用的开关。请先安排维护窗口并保留原绑定配置：
 切换 profile 会重建不兼容的 pinned 引擎，重启也会清理运行时绑定，期间保护有空窗。
 
@@ -93,22 +91,10 @@ curl --fail --silent --show-error \
 [Dashboard 认证](data-and-storage.md)凭据。
 
 确认 `ready=true` 且 `capabilities.file_delete_guard=true` 后，再由 SecCore 重新 Apply 防误删绑定。
-若仍为 false，检查 BPF-LSM、所选 profile 和引擎加载日志，不要绕过能力门控。
+若仍为 false，检查 BPF-LSM、PID 命名空间和引擎加载日志，不要绕过能力门控。
 `/run/agentsight/enforcer.sock` 使用内部版本化协议，不是供 `curl --unix-socket` 调用的 HTTP socket。
 回滚时把同一 drop-in 的 profile 改回 `credential-exfiltration`，重启 enforcer，并重新 Apply 原有绑定。
 仅重启 enforcer 无需停止 AgentSight 的采集或 Dashboard 服务。
-
-### 恢复 5.15 之前内核的崩溃 tracepoint holder
-
-在 5.15 之前的内核上，安装引擎的 enforcer 会保持 tracepoint 挂载，并在 ActPlane pin root
-（默认为 `/sys/fs/bpf/actplane/v1`）下固定 `tp_holder_<kernel-pid>_<start>` marker。
-崩溃后，从嵌套或容器默认 PID namespace 重启时，可能无法确认该 holder 是否仍存活。
-此时启动会失败并给出恢复指引，同时保持 pin root 不变；不可见的 holder 绝不会被自动视为 stale。
-
-请从宿主机或旧 enforcer 原先所在的 PID namespace 停止该进程，并确认旧 holder 已退出。
-只有确认不存在任何存活 holder 后，才能手动清理失效的 ActPlane pin root（或
-`ACTPLANE_BPF_PIN_ROOT` 配置的路径），然后重启 enforcer，并重新检查健康状态和启动日志。
-绝不能仅因当前容器看不到 marker 中的进程，就清理共享的 pin root。
 
 ## 前台运行（排查用）
 
@@ -166,16 +152,10 @@ ANOLISA 的容器入口脚本（`distribution/docker/docker-entrypoint.sh`）已
 `cap_bpf`/`cap_sys_admin`，有就启动 `agentsight-start`，没有则打印需要补上的 `docker run` 参数，而不是
 静默失败。
 
-在仍把 BPF map 计入 `RLIMIT_MEMLOCK` 的内核上（5.11 之前的内核，以及 Alibaba Cloud Linux 5.10 等厂商
-5.10 内核），容器默认的 64 KiB 远远不够，探针创建会以 `EPERM` 失败。`agentsight trace` 持有
-`CAP_SYS_RESOURCE` 时会自行调高该上限，因此请追加 `--cap-add CAP_SYS_RESOURCE`（Kubernetes 中为
-`SYS_RESOURCE`），或以 `--ulimit memlock=-1` 启动容器。两者都做不到时，探针创建的报错会写明当前生效的
-上限和上述处理办法。
-
 做 Kubernetes Sidecar 时，同样是三件事：
 
-1. 能力——`securityContext.capabilities.add: ["BPF", "PERFMON"]`（在上述按 memlock 记账的内核上再加
-   `SYS_RESOURCE`）；不支持细粒度 eBPF 能力的平台上使用 `privileged: true`；
+1. 能力——`securityContext.capabilities.add: ["BPF", "PERFMON"]`；不支持细粒度 eBPF 能力的平台上使用
+   `privileged: true`；
 2. 可见性——Sidecar 需与 Agent 容器共享 PID 命名空间（`shareProcessNamespace: true`），才能看到 Agent
    进程并挂载 uprobe；
 3. BTF——以只读方式挂载宿主机的 `/sys/kernel/btf`。
@@ -223,9 +203,8 @@ kubectl -n agentsight rollout status ds/agentsight
 kubectl -n agentsight port-forward ds/agentsight 7396:7396   # 然后打开 http://localhost:7396
 ```
 
-清单申请了 `BPF` + `PERFMON` + `SYS_PTRACE` + `SYS_RESOURCE` 权能（`SYS_PTRACE` 用于读取其他 uid 进程的
-`/proc/<pid>/maps`——目标进程一旦转为 non-dumpable，缺它会被静默跳过；`SYS_RESOURCE` 用于在按 memlock
-记账的内核上调高 `RLIMIT_MEMLOCK`），只读挂载宿主
+清单申请了 `BPF` + `PERFMON` + `SYS_PTRACE` 权能（最后一个用于读取其他 uid 进程的
+`/proc/<pid>/maps`——目标进程一旦转为 non-dumpable，缺它会被静默跳过），只读挂载宿主
 `/sys/kernel/btf`，数据持久化到 hostPath `/var/log/sysak`；资源限制与安装包的 systemd unit
 对齐（300m CPU / 350Mi 内存）。它不访问 Kubernetes API，因此无需 RBAC。Pod 内只运行 trace 与
 serve 两个 worker（`agentsight-start`），因此该形态下 Risk Enforcement 页面无数据。如需覆盖

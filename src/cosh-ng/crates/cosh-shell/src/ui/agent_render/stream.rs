@@ -37,7 +37,6 @@ pub struct MarkdownStreamBlock {
     renderer: RatatuiInlineRenderer,
     pending: String,
     started: bool,
-    rendered_body: bool,
 }
 
 impl StreamingAgentBlock {
@@ -356,7 +355,6 @@ impl MarkdownStreamBlock {
             renderer,
             pending: String::new(),
             started: false,
-            rendered_body: false,
         }
     }
 
@@ -402,10 +400,6 @@ impl MarkdownStreamBlock {
         !self.pending.trim().is_empty()
     }
 
-    pub(crate) fn has_rendered_body(&self) -> bool {
-        self.rendered_body
-    }
-
     fn write_markdown_fragment<W: Write>(&mut self, output: &mut W, text: &str) -> io::Result<()> {
         if self.renderer.styled && !self.renderer.plain {
             return self.write_styled_markdown_fragment(output, text);
@@ -417,7 +411,6 @@ impl MarkdownStreamBlock {
         }
 
         if !self.started {
-            writeln!(output)?;
             if self.renderer.plain {
                 writeln!(
                     output,
@@ -446,7 +439,6 @@ impl MarkdownStreamBlock {
                 &line,
             )?;
         }
-        self.rendered_body = true;
         Ok(())
     }
 
@@ -470,7 +462,6 @@ impl MarkdownStreamBlock {
         }
 
         if !self.started {
-            writeln!(output)?;
             writeln!(
                 output,
                 "{}",
@@ -485,7 +476,6 @@ impl MarkdownStreamBlock {
         for line in lines {
             write_styled_card_line(output, self.renderer.content_width(), line)?;
         }
-        self.rendered_body = true;
         Ok(())
     }
 

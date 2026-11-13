@@ -40,7 +40,7 @@ AW 框架包含 `crates/` 下的 10 个 crate。具体 Provider 在 `providers/`
 依赖列省略 `aw-` 前缀。`aw-package` 的测试还依赖 `aw-service`，`aw-provider` 的测试还依赖 `aw-config`，CLI 集成测试还使用
 `aw-contracts` 和 `reqwest`。底层库不依赖 `aw-cli`；`aw` 在进程内调用配置与本地扩展管理 API。
 独立 `aw-package` 可执行文件已删除，Rust crate 保留。`make -C src/aw build`
-构建 AW CLI；`make -C distribution aw-packages VERSION=0.1.1 COMPONENTS='core sec-core tokenless' OUTPUT="$PWD/target/aw-packages"` 通过
+构建 AW CLI；`make -C distribution aw-packages VERSION=0.1.0 COMPONENTS='core sec-core tokenless' OUTPUT="$PWD/target/aw-packages"` 通过
 `distribution/packaging/aw/` 下的普通脚本组装独立归档。
 扩展记录、文件校验和持久事务位于 `aw-package` 私有 `store` 模块；
 运行时文件读锁位于 `aw-exec`，不依赖包数据库访问。
@@ -110,12 +110,6 @@ service 继续负责运行期激活与策略代次。见[编辑合同](configura
 原生 Hook 脚本也通过 `aw-exec` 执行，保留原始输出和退出码，不经过 Provider 握手。
 AgentSight 是独立的可选观测来源；`aw inspect` 的只读视图不参与 Hook 准入。
 
-`aw-service` 在持久 Journal 中独立生产白名单公共运行事实。配置策略的 Hook 记录
-`ExecutionEvent` 与 Provider 完成事实；Qoder SDK 和 QwenPaw 无策略工具回调也保留
-原生关联和结果状态。CLI 的 Worker 启动、结束事实不依赖 Sight。公共投影复用原始
-记录序号、摘要和持久时间；正文只计算摘要，实际效果采用与覆盖范围缺少证据时保留
-未确认状态。详见 [公共对象](runtime/public-objects.md)。
-
 Skill 校验复用 `tool.before` 与既有的 opaque `event.native` 扩展。
 Qoder SDK 或 QwenPaw Adapter 提供 `aw_skill`（请求名称、规范化目录、来源）或
 解析错误。sec-core Provider 调用公开的只读 Ledger 检查并映射信任状态，目录授权
@@ -124,31 +118,11 @@ Qoder SDK 或 QwenPaw Adapter 提供 `aw_skill`（请求名称、规范化目录
 
 ### 显式策略更新
 
-受支持的常驻工厂和已准备原生启动安装 Adapter 更新边界，`aw run --reloadable`
-选择单独的受限桥接。`aw instance update` 与 `aw update` 定位现有实例，
+`aw run --reloadable` 显式预装稳定 Adapter 入口，`aw update` 定位现有实例，
 由 `aw-service` 在请求准入门外准备新的不可变 Host，再在同一门内最终复查空闲和版本后发布。
 服务保留启动身份，每个实例持有自己的激活策略。原生 Adapter 报告请求/工具生命周期，
 保留调度与效果采纳；Provider 协议和 Core 计划执行不变。
 固定版本、busy 拒绝、进程关联及验收范围见[策略热更新](runtime/policy-reload.md)。
-
-### 业务自管原生启动
-
-`instance setup` 只在明确选择的位置安装启动资产。应用原生启动时，直接创建
-`instance prepare` 子进程，CLI 复用 Adapter 校验、配置与 Service 登记，返回私有
-桥接资产，登记仍保持待就绪状态。原 owner 在派发前确认原生就绪，从 Unix peer、
-进程启动身份到实例形成连续的所有权核验。
-
-普通 SDK 工厂和 QwenPaw 使用子任务 Scope。Qoder、OpenClaw 与 Hermes 使用已准入的
-原生根桥接，通过请求和工具生命周期约束策略更新。根生命周期调用继续核验 owner，
-原生回调须来自 owner 进程树；普通 SDK 根实例仍不能直接执行回调。预装 Qoder TUI/print
-通过 SessionStart 确认原生根；对已有 Qoder TUI 的外部 attach 仍限于首个请求之前。
-
-配置选定的服务身份保持固定，各实例拥有自己的策略版本。以修改后的配置准备实例时，
-先校验允许变化的策略范围，再复用该服务。清理释放实例所属 Provider 工作和临时资产，
-应用进程仍由业务管理。仅安装启动组件或发现进程不能证明 Ready。Provider 协议、Core
-效果准入与 Host 调用链继续共用。
-操作与回退见[业务自管接入](../../../../../docs/developer-guide/zh/aw/deployment/independent-instances.md)，
-各框架清理边界见[策略更新](../../../../../docs/developer-guide/zh/aw/deployment/policy-updates.md)。
 
 ### `aw-core` 在哪里
 
@@ -202,7 +176,7 @@ Hook 事件执行保持 `aw-service → aw-host → aw-exec`，详见
 | Provider 消息与 View 协议 | `aw-provider/schemas/` |
 | Provider 私有配置与后端数据 | 对应的具体 Provider 目录 |
 
-`aw-contracts/schemas/` 只保存已注册、受测试覆盖的合同，目前共 28 份。
+`aw-contracts/schemas/` 只保存已注册、受测试覆盖的合同，目前共 23 份。
 计划、证据等 v1 合同仍在使用；四类能力的输入、输出使用 v2。
 此前八份未注册的能力 v1 草案没有仓库内调用方，已删除，历史内容可从 Git 查阅。
 
@@ -240,8 +214,3 @@ loopback HTTP 传输复用 workspace 已有的 `reqwest`。CLI 与服务共享�
 原生回调确认就绪后，调用者才派发输入。后续 `aw update` 使用已有空闲激活门控。
 `install --remove` 通过 Unbind 原子关闭完整请求和工具准入，再清理所属原生注册与
 私有产物。这条路径不启动外部进程，也不向其发送信号；普通 `aw run` 继续监督子进程。
-
-公共审计消费者通过 `aw audit-export` → `aw-service::audit_export` →
-`aw-core::journal::reader` 读取。读取器固定所属用户的存储并验证有界源链，
-Service 投影保留的公共对象；此路径不使用控制 RPC。
-游标与缺口语义见[审计增量读取](runtime/audit-export.md)。

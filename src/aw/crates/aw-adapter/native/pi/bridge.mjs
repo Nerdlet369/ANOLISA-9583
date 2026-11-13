@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
 
-export function configuration(config = JSON.parse(readFileSync(process.env.AW_NATIVE_CONFIG, "utf8"))) {
+export function configuration() {
+  const config = JSON.parse(readFileSync(process.env.AW_NATIVE_CONFIG, "utf8"));
   for (const key of ["executable", "binding", "ready_path", "ready_token"]) {
     if (typeof config[key] !== "string" || !config[key])
       throw new Error(`Missing AW ${key}`);
@@ -69,7 +70,7 @@ async function invoke(config, hook, payload, signal) {
     typeof directive !== "object" ||
     Array.isArray(directive) ||
     Object.keys(directive).some(
-      (key) => !["block", "reason", "aw_replacement", "aw_withheld", "aw_updated_input"].includes(key),
+      (key) => !["block", "reason", "aw_replacement", "aw_withheld"].includes(key),
     ) ||
     (directive.block !== undefined &&
       typeof directive.block !== "boolean") ||
@@ -79,10 +80,6 @@ async function invoke(config, hook, payload, signal) {
   ) {
     throw new Error("unsupported_pi_directive");
   }
-  if (Object.hasOwn(directive, "aw_updated_input") &&
-      (hook.event !== "tool.before" || Object.keys(directive).length !== 1 ||
-       !directive.aw_updated_input || typeof directive.aw_updated_input !== "object" ||
-       Array.isArray(directive.aw_updated_input))) throw new Error("invalid_pi_input_replacement");
   if (Object.hasOwn(directive, "aw_withheld") &&
       (hook.event !== "tool.after" || hook.on_error !== "withhold_result" ||
        directive.aw_withheld !== true || Object.keys(directive).length !== 1))
@@ -130,8 +127,8 @@ function validateReplacement(result, replacement) {
 }
 
 /** Install after createAgentSession returns; resolve durable session identity at each preparation. */
-export function installSessionBridge(session, scope = null, policy = configuration()) {
-  const config = { ...configuration(policy), scope };
+export function installSessionBridge(session, scope = null) {
+  const config = { ...configuration(), scope };
   const agent = session.agent;
   if (!agent || typeof session.sessionManager?.getSessionId !== "function") {
     throw new Error("AW requires a Pi Coding AgentSession");
@@ -158,7 +155,6 @@ export function installSessionBridge(session, scope = null, policy = configurati
     for (const hook of routes) {
       try {
         const directive = await invoke(config, hook, payload, signal);
-        if (directive.aw_updated_input) return { input: directive.aw_updated_input };
         if (directive.aw_withheld) { withhold = true; continue; }
         if (Object.hasOwn(directive, "aw_replacement"))
           return withhold ? { withhold: true } : { replacement: directive.aw_replacement };
@@ -204,8 +200,7 @@ export function installSessionBridge(session, scope = null, policy = configurati
   let before = async function (context, signal) {
     config.scope?.checkExecution();
     producer?.claim(context);
-    const rewrite = beforeRoutes.some(hook => hook.replace_input);
-    let original = rewrite ? undefined : await previousBefore?.call(agent, context, signal);
+    const original = await previousBefore?.call(agent, context, signal);
     if (original?.block) return original;
     const call = identifier(context.toolCall.id, "tool call id");
     const identity = {
@@ -231,22 +226,9 @@ export function installSessionBridge(session, scope = null, policy = configurati
       { ...identity, event: "tool.before" },
       signal,
     );
-    if (denied?.block) {
+    if (denied) {
       if (config.scope) await config.scope.finish(identity.invocation_id);
       return denied;
-    }
-    if (denied?.input) {
-      for (const key of Object.keys(context.args)) delete context.args[key];
-      Object.assign(context.args, structuredClone(denied.input));
-      identity.tool_call.input = structuredClone(denied.input);
-    }
-    if (rewrite) {
-      const checked = structuredClone(context.args);
-      original = await previousBefore?.call(agent, context, signal);
-      if (original?.block || !isDeepStrictEqual(context.args, checked)) {
-        if (config.scope) await config.scope.finish(identity.invocation_id);
-        return original?.block ? original : { block: true, reason: "Native callback changed checked arguments" };
-      }
     }
     if (config.scope) await config.scope.validate();
     active.set(call, { identity, object: context.toolCall });

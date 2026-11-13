@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use actplane_ifc_compiler::{Compiled, compile_str};
 use agentsight_enforcement_protocol::{
     ApplyCredentialPolicy, ApplyPolicy, Binding, BindingState, CredentialExfiltrationPolicy,
-    DestinationClass, Effect, EnforcementCapabilities, EventIdentity, FileAction, FileDecision,
+    DestinationClass, Effect, EnforcementCapabilities, EventIdentity, FileAction,
     FileProtectionExclusionKind, FileProtectionTargetKind, HealthStatus, NetworkAction,
     NetworkDirection, PROTOCOL_VERSION, PolicyDecision, PolicyMode, ReplaceFailureCode,
     ReplaceOutcome, ReplacePolicy, ReplaceValidationError, ReplacementPolicy, SecurityEvent,
@@ -151,10 +151,10 @@ pub const ACTPLANE_REVISION: &str = "a62e5d9d96f91101cda019519053e950d532380a";
 struct ActiveBinding {
     binding: Binding,
     credential_policy: Option<CredentialExfiltrationPolicy>,
-    /// Init-namespace TGID resolved independently of the procfs-local request PID.
-    kernel_pid: i32,
-    /// Namespace-init ticks subtracted from descendant kernel start times.
-    procfs_start_time_bias: u64,
+    /// When the target process runs inside a PID namespace, this holds the
+    /// global kernel PID resolved by [`resolve_to_host_pid`].  `None` when
+    /// the namespace PID equals the kernel PID (root namespace).
+    kernel_pid: Option<i32>,
     reasons: Vec<String>,
     rule_names: Vec<String>,
     label_names: HashMap<u64, String>,
@@ -165,8 +165,6 @@ struct ActiveBinding {
 
 struct PreparedBinding {
     request: ApplyPolicy,
-    kernel_pid: i32,
-    procfs_start_time_bias: u64,
     credential_policy: Option<CredentialExfiltrationPolicy>,
     compiled: Option<Compiled>,
     inode_policy: InodePolicy,
@@ -214,6 +212,10 @@ pub struct ActPlaneBackend {
     lifecycle: Mutex<()>,
     /// Init-namespace identity captured by BPF for control-plane map operations.
     control_pid: i32,
+    /// True when the enforcer is running in the init PID namespace.
+    /// File-delete-guard requires this for correct cap_task seeding and
+    /// domain propagation.  When false, health reports file_delete_guard=false.
+    in_init_pidns: bool,
 }
 
 impl ActPlaneBackend {
@@ -281,6 +283,7 @@ impl ActPlaneBackend {
             poller: Mutex::new(Some(poller)),
             lifecycle: Mutex::new(()),
             control_pid,
+            in_init_pidns: is_init_pid_namespace(),
         })
     }
 
@@ -291,19 +294,29 @@ impl ActPlaneBackend {
     }
 
     fn structured_delete_ready(&self) -> bool {
-        self.engine.supports_file_delete_guard() && ebpf_ifc_engine::bpf_lsm_active()
+        self.engine.supports_file_delete_guard()
+            && ebpf_ifc_engine::bpf_lsm_active()
+            && self.in_init_pidns
     }
 
     fn structured_ordinary_write_ready(&self) -> bool {
         self.structured_delete_ready() && self.engine.supports_file_permission_guard()
     }
 
-    fn cleanup_binding(&self, id: u32, kernel_pid: i32) -> Vec<String> {
+    fn cleanup_binding(
+        &self,
+        request: &ApplyPolicy,
+        id: u32,
+        kernel_pid: Option<i32>,
+    ) -> Vec<String> {
         let mut errors = Vec::new();
         if let Err(error) = self.engine.unbind_pid_from_domain(self.control_pid, id) {
             errors.push(format!("unbind control pid: {error}"));
         }
-        if let Err(error) = self.engine.unbind_pid_from_domain(kernel_pid, id) {
+        // Use the resolved kernel PID when the target runs in a PID namespace;
+        // fall back to the namespace PID stored in the request otherwise.
+        let effective_pid = kernel_pid.unwrap_or(request.root_pid);
+        if let Err(error) = self.engine.unbind_pid_from_domain(effective_pid, id) {
             errors.push(format!("unbind target pid: {error}"));
         }
         if let Err(error) = self.reload.clear_runtime_state() {
@@ -315,7 +328,7 @@ impl ActPlaneBackend {
 
     fn prepare_binding(
         &self,
-        request: ApplyPolicy,
+        mut request: ApplyPolicy,
         credential_policy: Option<CredentialExfiltrationPolicy>,
     ) -> Result<PreparedBinding, BackendError> {
         let normalized = normalize_actplane_policy_payload(&request)?;
@@ -324,7 +337,7 @@ impl ActPlaneBackend {
             .is_some_and(|policy| policy.targets.iter().any(|target| target.ordinary_write));
         if normalized.is_some() && !self.structured_delete_ready() {
             return Err(BackendError::CompileFailure(
-                "structured file protection requires the agent-file-guard profile and active BPF LSM"
+                "structured file protection requires the agent-file-guard profile, active BPF LSM, and init PID namespace"
                     .into(),
             ));
         }
@@ -339,25 +352,23 @@ impl ActPlaneBackend {
                 "ordinary write protection requires the attached file_permission hook".into(),
             ));
         }
+        require_target_pid_visibility(self.in_init_pidns, procfs_exposes_init_namespace_pids())?;
+        // Resolve namespace-local PID to host PID BEFORE start-time validation,
+        // so that the stale-process check reads the correct /proc/<host_pid>/stat.
+        let host_pid = resolve_to_host_pid(request.root_pid, request.process_start_time);
+        if host_pid != request.root_pid {
+            eprintln!(
+                "resolve_to_host_pid: namespace pid {} -> host pid {}",
+                request.root_pid, host_pid
+            );
+            request.root_pid = host_pid;
+        }
         let actual_start = read_process_start_time(request.root_pid)?;
         if actual_start != request.process_start_time {
             return Err(BackendError::StaleProcess {
                 pid: request.root_pid,
             });
         }
-        let identity =
-            ebpf_ifc_engine::resolve_process_identity(request.root_pid, request.process_start_time)
-                .map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        BackendError::StaleProcess {
-                            pid: request.root_pid,
-                        }
-                    } else {
-                        kernel_error("resolve target process kernel identity", error)
-                    }
-                })?;
-        let kernel_pid = identity.kernel_pid;
-        let procfs_start_time_bias = identity.procfs_start_time_bias;
         if let Some(policy) = normalized {
             // Writable shared mappings held before attach bypass every LSM
             // hook, so refuse the binding instead of claiming coverage.
@@ -385,8 +396,6 @@ impl ActPlaneBackend {
             preexisting_maps::reject_preexisting_read_mappings(request.root_pid, &read_entries)?;
             return Ok(PreparedBinding {
                 request,
-                kernel_pid,
-                procfs_start_time_bias,
                 credential_policy,
                 compiled: None,
                 inode_policy: InodePolicy::default(),
@@ -417,8 +426,6 @@ impl ActPlaneBackend {
         )?;
         Ok(PreparedBinding {
             request,
-            kernel_pid,
-            procfs_start_time_bias,
             credential_policy,
             compiled: Some(compiled),
             inode_policy,
@@ -434,8 +441,6 @@ impl ActPlaneBackend {
     ) -> Result<Binding, BackendError> {
         let PreparedBinding {
             request,
-            kernel_pid,
-            procfs_start_time_bias,
             credential_policy,
             compiled,
             inode_policy,
@@ -491,15 +496,15 @@ impl ActPlaneBackend {
             self.engine
                 .guard_inode(ino, dev, flags, id, target_id)
                 .map_err(|error| {
-                    let cleanup = self.cleanup_binding(id, kernel_pid);
+                    let cleanup = self.cleanup_binding(&request, id, None);
                     let context = format!("guard exact-file inode (flags {flags:#x})");
                     kernel_error_with_cleanup(&context, error, cleanup)
                 })?;
         }
         self.engine
-            .seed_label_in_domain(kernel_pid, id, label)
+            .seed_label_in_domain(request.root_pid, id, label)
             .map_err(|error| {
-                let cleanup = self.cleanup_binding(id, kernel_pid);
+                let cleanup = self.cleanup_binding(&request, id, None);
                 kernel_error_with_cleanup("seed target process domain", error, cleanup)
             })?;
 
@@ -510,9 +515,9 @@ impl ActPlaneBackend {
         // domain and keep the outcome visible through the binding message.
         let migration = self
             .engine
-            .migrate_session_tree(kernel_pid, id)
+            .migrate_session_tree(request.root_pid, id)
             .map_err(|error| {
-                let cleanup = self.cleanup_binding(id, kernel_pid);
+                let cleanup = self.cleanup_binding(&request, id, None);
                 kernel_error_with_cleanup("migrate prior session tree", error, cleanup)
             })?;
         if !migration.failed_pids.is_empty() {
@@ -540,7 +545,7 @@ impl ActPlaneBackend {
                 ..CapState::default()
             };
             if let Err(error) = self.engine.bind_state(self.control_pid, id, control_state) {
-                let cleanup = self.cleanup_binding(id, kernel_pid);
+                let cleanup = self.cleanup_binding(&request, id, None);
                 return Err(kernel_error_with_cleanup(
                     "bind control process",
                     error,
@@ -551,7 +556,7 @@ impl ActPlaneBackend {
                 self.reload
                     .append_policy_delta(self.control_pid, id, &compiled.bytes)
             {
-                let cleanup = self.cleanup_binding(id, kernel_pid);
+                let cleanup = self.cleanup_binding(&request, id, None);
                 return Err(kernel_error_with_cleanup(
                     "append policy delta",
                     error,
@@ -559,7 +564,7 @@ impl ActPlaneBackend {
                 ));
             }
             if let Err(error) = self.engine.unbind_pid_from_domain(self.control_pid, id) {
-                let cleanup = self.cleanup_binding(id, kernel_pid);
+                let cleanup = self.cleanup_binding(&request, id, None);
                 return Err(kernel_error_with_cleanup(
                     "unbind control process",
                     error,
@@ -601,8 +606,7 @@ impl ActPlaneBackend {
         let mut active = ActiveBinding {
             binding: binding.clone(),
             credential_policy,
-            kernel_pid,
-            procfs_start_time_bias,
+            kernel_pid: None,
             reasons,
             rule_names,
             label_names,
@@ -610,7 +614,7 @@ impl ActPlaneBackend {
             file_protection: None,
         };
         if let Err(error) = active.inode_policy.install(&self.engine, id) {
-            let cleanup = self.cleanup_binding(id, kernel_pid);
+            let cleanup = self.cleanup_binding(&active.binding.request, id, None);
             if !cleanup.is_empty() {
                 // Keep descriptors and the binding available for a detach retry;
                 // never allow inode reuse while a partial registration survives.
@@ -630,7 +634,7 @@ impl ActPlaneBackend {
                     active.file_protection = Some(Arc::new(Mutex::new(file_protection)));
                 }
                 Err(error) => {
-                    let cleanup = self.cleanup_binding(id, kernel_pid);
+                    let cleanup = self.cleanup_binding(&active.binding.request, id, None);
                     return Err(activation_error_with_cleanup(error, cleanup));
                 }
             }
@@ -646,6 +650,7 @@ impl ActPlaneBackend {
     ) -> Result<Binding, BackendError> {
         let _ = normalize_actplane_policy_payload(&request)?;
         let _lifecycle = self.lifecycle();
+        require_init_pid_ns(self.in_init_pidns)?;
         let mut bindings = self.state.bindings();
         if let Some(existing) = bindings
             .values()
@@ -708,7 +713,7 @@ impl ActPlaneBackend {
                 return Err(error);
             }
         }
-        let cleanup = self.cleanup_binding(id, active.kernel_pid);
+        let cleanup = self.cleanup_binding(&active.binding.request, id, active.kernel_pid);
         if !cleanup.is_empty() {
             if let Some(stored) = bindings.get_mut(&id) {
                 stored.binding.state = BindingState::Degraded;
@@ -959,23 +964,10 @@ fn spawn_poller(
 /// evidence ids stored in `risk_evidence_links`, so the raw violation and its
 /// normalized sink evidence must carry the same `event_id`.
 fn publish_raw_violation(raw: Violation, active: &ActiveBinding, state: &RuntimeState) {
-    // A file-deletion violation and the audit evidence it stands for must share
-    // one id; otherwise the violation row cannot resolve to the case built from
-    // that evidence and the UI has nothing to link to.
-    let file_evidence = file_deletion_events(&raw, active, state);
-    let event_id = file_evidence
-        .as_ref()
-        .map_or_else(Uuid::new_v4, |events| events[0].event_id);
+    let event_id = Uuid::new_v4();
     state
         .events
         .publish(convert_violation(raw.clone(), active, event_id));
-    if let Some(events) = file_evidence {
-        // Correlation fails closed while referenced evidence is missing, so the
-        // decision keeps its place behind the file event on the hub.
-        for event in events {
-            state.security_events.publish(event);
-        }
-    }
     if raw.op == 3
         && raw.provenance.is_some()
         && let Some(policy) = active.credential_policy.as_ref()
@@ -1036,8 +1028,14 @@ fn parse_process_start_time(stat: &str) -> Result<u64, ProcessStatError> {
 
 /// Reads a `/proc` text file, decoding non-UTF-8 bytes lossily.
 ///
-/// `/proc/<pid>/stat` embeds a process name that may contain non-UTF-8 bytes.
-/// Lossy decoding preserves the ASCII start-time field behind that name.
+/// `/proc/<pid>/stat` and `/proc/<pid>/status` embed the process name, and the
+/// kernel allows almost any non-NUL bytes in a name (`prctl(PR_SET_NAME)` sets
+/// them directly, and an executable whose name is not valid UTF-8 passes them
+/// on). `read_to_string` rejects such a file outright, which failed binding
+/// preparation (`KernelFailure`) and PID-namespace resolution for a process
+/// purely because of its name, while every field these parsers read (start
+/// time, NSpid) is plain ASCII positioned after the name. Mirrors the
+/// sibling fix in `src/enforcement/target.rs`.
 fn read_proc_text_lossy(path: &str) -> std::io::Result<String> {
     fs::read(path).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -1297,9 +1295,8 @@ fn convert_security_events_at(
     let sink_time = monotonic_to_epoch_ns(raw.timestamp_ns, monotonic_now_ns, observed_at_ns);
     let source_time =
         monotonic_to_epoch_ns(provenance.timestamp_ns, monotonic_now_ns, observed_at_ns);
-    let source_start =
-        process_start_time(active, provenance.pid, provenance.process_start_boottime);
-    let target_start = process_start_time(active, raw.pid, raw.process_start_boottime);
+    let source_start = process_start_time(active, provenance.pid);
+    let target_start = process_start_time(active, raw.pid);
     let source_identity = event_identity(active, provenance.pid, None, source_start);
     let sink_identity = event_identity(active, raw.pid, Some(raw.ppid), target_start);
     let source_event_id = Uuid::new_v4();
@@ -1387,15 +1384,11 @@ fn convert_security_events_at(
     ])
 }
 
-fn process_start_time(active: &ActiveBinding, pid: i32, start_boottime: u64) -> u64 {
-    if pid == active.kernel_pid {
+fn process_start_time(active: &ActiveBinding, pid: i32) -> u64 {
+    if pid == active.binding.request.root_pid {
         active.binding.request.process_start_time
     } else {
-        ebpf_ifc_engine::procfs_start_time_from_boottime(
-            start_boottime,
-            active.procfs_start_time_bias,
-        )
-        .unwrap_or(0)
+        read_process_start_time(pid).unwrap_or(0)
     }
 }
 
@@ -1478,84 +1471,6 @@ fn trusted_endpoint_covers(trusted: &str, destination: &str) -> bool {
     destination_port.is_none_or(|port| trusted_port.is_none_or(|trusted| trusted == port))
 }
 
-/// Operations whose denial the file-deletion policy reports.
-const FILE_DELETION_OPS: [u32; 3] = [5, 6, 7];
-
-/// Builds the file event and the decision event for a file-deletion match.
-///
-/// Returns `None` for other operations and when the binding cannot yield a
-/// numeric policy revision: a violation without a case is still honest, while a
-/// case carrying an invented revision would be evidence that cannot be audited.
-fn file_deletion_events(
-    raw: &Violation,
-    active: &ActiveBinding,
-    state: &RuntimeState,
-) -> Option<[SecurityEvent; 2]> {
-    if !FILE_DELETION_OPS.contains(&raw.op) {
-        return None;
-    }
-    let policy_revision = match active.binding.request.policy_revision.parse::<u64>() {
-        Ok(revision) => revision,
-        Err(_) => {
-            let message = format!(
-                "policy revision '{}' is not numeric",
-                active.binding.request.policy_revision
-            );
-            log::error!("{message}");
-            *state.runtime_error() = Some(message);
-            return None;
-        }
-    };
-    let rule_index = raw.rule_id as usize;
-    let operation = operation_name(raw.op);
-    let observed_at_ns = now_ns();
-    let occurred_at_ns = monotonic_now_ns()
-        .map(|monotonic_now_ns| {
-            monotonic_to_epoch_ns(raw.timestamp_ns, monotonic_now_ns, observed_at_ns)
-        })
-        .unwrap_or(observed_at_ns);
-    let identity = event_identity(
-        active,
-        raw.pid,
-        Some(raw.ppid),
-        process_start_time(active, raw.pid, raw.process_start_boottime),
-    );
-    Some(SecurityEvent::file_operation_decision(
-        identity,
-        occurred_at_ns,
-        observed_at_ns,
-        FileDecision {
-            policy_id: active.binding.request.policy_id.clone(),
-            policy_revision,
-            operation: operation.into(),
-            path: redact_home_path(&raw.target),
-            resource_class: "protected_path".into(),
-            rule_id: active
-                .rule_names
-                .get(rule_index)
-                .cloned()
-                .or_else(|| Some(raw.rule_id.to_string())),
-            // An unset product mode still records the case; only an explicit
-            // Observe skips case creation.
-            mode: active
-                .binding
-                .request
-                .policy_mode
-                .unwrap_or(PolicyMode::Audit),
-            requested_effect: effect(raw.effect),
-            blocked: raw.blocked,
-            killed: raw.killed,
-            errno: raw.blocked.then_some(libc::EPERM),
-            risk_score: if raw.blocked { 90 } else { 60 },
-            reason: active
-                .reasons
-                .get(rule_index)
-                .cloned()
-                .unwrap_or_else(|| format!("file deletion policy matched {operation}")),
-        },
-    ))
-}
-
 fn convert_violation(raw: Violation, active: &ActiveBinding, event_id: Uuid) -> ViolationEvent {
     let monotonic_now_ns = monotonic_now_ns();
     let observed_at_ns = now_ns();
@@ -1584,7 +1499,7 @@ fn convert_violation_at(
         policy_revision: active.binding.request.policy_revision.clone(),
         pid: raw.pid,
         ppid: Some(raw.ppid),
-        process_start_time: process_start_time(active, raw.pid, raw.process_start_boottime),
+        process_start_time: read_process_start_time(raw.pid).unwrap_or(0),
         operation: operation_name(raw.op).into(),
         target: raw.target,
         effect: effect(raw.effect),
@@ -1696,6 +1611,161 @@ fn kernel_error_with_cleanup(
     BackendError::KernelFailure(message)
 }
 
+/// Resolve a potentially namespace-local PID to the global (init namespace)
+/// kernel PID that BPF `handle_fork` / `cap_fork` will use.
+///
+/// The procfs view must be rooted in the init PID namespace so that
+/// `/proc/<pid>/status` exposes the full `NSpid` chain. A nested enforcer
+/// therefore needs a host procfs mount; its container-local `/proc` is unsafe.
+///
+/// **Algorithm**:
+/// 1. Fast path: `/proc/<input_pid>/stat` exists and `start_time` matches →
+///    the PID is valid in the host namespace.  Return `NSpid[0]` (always the
+///    host PID when reading from init ns).
+/// 2. Slow path: the PID does not exist in host `/proc` or `start_time` does
+///    not match (namespace-local PID collides with a different host process).
+///    Scan `/proc/*/status` for a process whose innermost `NSpid` value equals
+///    `input_pid` and whose `start_time` matches.  Return its host PID.
+/// 3. Fallback: no match found — return `input_pid` unchanged and let the
+///    caller handle the stale-process / not-found case.
+fn resolve_to_host_pid(input_pid: i32, input_start_time: u64) -> i32 {
+    // Fast path: pid exists in host /proc and start_time matches.
+    if let Ok(start_time) = proc_start_time(input_pid)
+        && start_time == input_start_time
+    {
+        return first_nspid(input_pid).unwrap_or(input_pid);
+    }
+
+    // Slow path: scan /proc for a process whose innermost NSpid == input_pid
+    // and whose start_time matches.
+    let proc_dir = match fs::read_dir("/proc") {
+        Ok(d) => d,
+        Err(_) => return input_pid,
+    };
+    for entry in proc_dir.flatten() {
+        let name = entry.file_name();
+        let Ok(host_pid) = name.to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        if host_pid <= 0 {
+            continue;
+        }
+        let nspid = read_nspid_chain(host_pid);
+        if nspid.len() < 2 {
+            continue; // not in a nested namespace
+        }
+        if *nspid.last().unwrap() != input_pid {
+            continue; // innermost ns PID doesn't match
+        }
+        if let Ok(pst) = proc_start_time(host_pid)
+            && pst == input_start_time
+        {
+            return nspid[0]; // host PID
+        }
+    }
+
+    input_pid // fallback
+}
+
+/// Read the `NSpid:` chain from `/proc/<pid>/status`.  Returns a Vec where
+/// index 0 is the outermost (host) PID and the last element is the innermost
+/// (namespace-local) PID.
+fn read_nspid_chain(pid: i32) -> Vec<i32> {
+    let Ok(status) = read_proc_text_lossy(&format!("/proc/{pid}/status")) else {
+        return vec![];
+    };
+    parse_nspid_from_status(&status)
+}
+
+/// Parse the `NSpid:` chain from a decoded `/proc/<pid>/status` payload;
+/// empty when the line is absent or carries no valid PID.
+fn parse_nspid_from_status(status: &str) -> Vec<i32> {
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("NSpid:") {
+            return rest
+                .split_whitespace()
+                .filter_map(|s| s.parse::<i32>().ok())
+                .collect();
+        }
+    }
+    vec![]
+}
+
+/// Return the first (host-namespace) value from the `NSpid:` line of
+/// `/proc/<pid>/status`, or `None` if unavailable.
+fn first_nspid(pid: i32) -> Option<i32> {
+    read_nspid_chain(pid).first().copied()
+}
+
+/// Read `start_time` (field 22) from `/proc/<pid>/stat`.
+fn proc_start_time(pid: i32) -> Result<u64, ()> {
+    let stat = read_proc_text_lossy(&format!("/proc/{pid}/stat")).map_err(|_| ())?;
+    let after_comm = &stat[stat.rfind(')').ok_or(())? + 2..];
+    after_comm
+        .split_ascii_whitespace()
+        .nth(19) // field 22 = index 19 after ')'
+        .and_then(|s| s.parse::<u64>().ok())
+        .ok_or(())
+}
+
+/// Kernel-assigned inode of the initial PID namespace (`PROC_PID_INIT_INO`).
+const PROC_PID_INIT_INO: u64 = 0xEFFF_FFFC;
+
+/// Returns whether procfs PID 1 belongs to the initial PID namespace.
+fn procfs_exposes_init_namespace_pids() -> bool {
+    fs::metadata("/proc/1/ns/pid")
+        .map(|metadata| metadata.ino() == PROC_PID_INIT_INO)
+        .unwrap_or(false)
+}
+
+/// Returns whether the current process runs in the initial PID namespace.
+fn is_init_pid_namespace() -> bool {
+    let Ok(self_ns) = fs::metadata("/proc/self/ns/pid") else {
+        return false; // can't read → assume not init, fail-closed
+    };
+    // PID 1 may be container-local; the kernel assigns a fixed inode to the init namespace.
+    let result = self_ns.ino() == PROC_PID_INIT_INO;
+    if !result {
+        eprintln!(
+            "agentsight-enforcer: not in init PID namespace \
+             (pidns_ino={}); policy application will be refused",
+            self_ns.ino(),
+        );
+    }
+    result
+}
+
+/// Rejects target binding when procfs cannot establish init-namespace process identity.
+fn require_target_pid_visibility(
+    in_init_pidns: bool,
+    procfs_init: bool,
+) -> Result<(), BackendError> {
+    if in_init_pidns || procfs_init {
+        return Ok(());
+    }
+    Err(BackendError::UnsupportedEnvironment(
+        "target PID resolution requires an init-namespace procfs view; \
+         container-local /proc cannot safely bind ActPlane policies. \
+         Run the enforcer on the host or with host PID visibility \
+         (hostPID: true / --pid=host)."
+            .into(),
+    ))
+}
+
+/// Rejects PID namespaces that cannot satisfy ActPlane's kernel PID admission checks.
+fn require_init_pid_ns(in_init_pidns: bool) -> Result<(), BackendError> {
+    if in_init_pidns {
+        return Ok(());
+    }
+    Err(BackendError::UnsupportedEnvironment(
+        "ActPlane enforcement requires the init PID namespace: policy admission \
+         compares init-namespace pids that a PID-namespaced enforcer cannot \
+         supply. Run the enforcer on the host or with host PID visibility \
+         (hostPID: true / --pid=host)."
+            .into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
@@ -1712,6 +1782,18 @@ mod tests {
     use super::*;
 
     const _: fn(&PinnedEngine) -> std::io::Result<usize> = PinnedEngine::drain_pending_events;
+
+    #[test]
+    fn pid_namespace_detection_uses_nsfs_inode() {
+        let expected = fs::metadata("/proc/self/ns/pid")
+            .map(|metadata| metadata.ino() == PROC_PID_INIT_INO)
+            .unwrap_or(false);
+        assert_eq!(is_init_pid_namespace(), expected);
+        let procfs_expected = fs::metadata("/proc/1/ns/pid")
+            .map(|metadata| metadata.ino() == PROC_PID_INIT_INO)
+            .unwrap_or(false);
+        assert_eq!(procfs_exposes_init_namespace_pids(), procfs_expected);
+    }
 
     #[test]
     fn source_label_rejects_unrelated_dsl_labels_but_accepts_structured_policies() {
@@ -1879,8 +1961,7 @@ mod tests {
                 domain_id: Some(7),
             },
             credential_policy: Some(credential_policy()),
-            kernel_pid: 42,
-            procfs_start_time_bias: 0,
+            kernel_pid: None,
             reasons: vec!["credential reached an external sink".into()],
             rule_names: vec!["block-exfiltration".into()],
             label_names: HashMap::from([(1, "CREDENTIAL".into())]),
@@ -1907,7 +1988,6 @@ mod tests {
             matched_labels: 1,
             provenance: None,
             timestamp_ns,
-            process_start_boottime: 9_876_500_000,
         }
     }
 
@@ -2076,7 +2156,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 269_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.ssh/id_rsa".into(),
@@ -2128,7 +2207,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 269_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.aws/credentials".into(),
@@ -2183,7 +2261,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 269_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.aws/credentials".into(),
@@ -2223,7 +2300,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 200_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.aws/credentials".into(),
@@ -2279,7 +2355,6 @@ mod tests {
             raw.provenance = Some(Provenance {
                 label: 1,
                 timestamp_ns: 269_000_000_000,
-                process_start_boottime: 9_876_500_000,
                 pid: 43,
                 op: 1,
                 target: "/root/.aws/credentials".into(),
@@ -2320,7 +2395,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: now - 1_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.ssh/id_rsa".into(),
@@ -2350,97 +2424,6 @@ mod tests {
     }
 
     #[test]
-    fn a_file_deletion_violation_publishes_its_decision_under_one_identity() {
-        // Every operation the file-deletion policy reports must reach the audit
-        // stream, not just unlink: a rename or rmdir denial is the same product
-        // promise and used to stop at the violation hub.
-        for (op, operation) in [(5u32, "unlink"), (6, "rename"), (7, "rmdir")] {
-            let now = monotonic_now_ns().expect("monotonic clock should be readable");
-            let mut raw = raw_violation(now);
-            raw.op = op;
-            raw.target = "/root/.ssh/id_rsa".into();
-            raw.blocked = true;
-            let mut active = active_binding();
-            active.binding.request.policy_revision = "3".into();
-            let state = RuntimeState::new();
-            let violations = state
-                .events
-                .subscribe(Uuid::new_v4(), SubscriberClass::BestEffort);
-            let evidence = state.security_events.subscribe();
-
-            publish_raw_violation(raw, &active, &state);
-
-            let violation = violations
-                .try_recv()
-                .expect("the raw violation must be published");
-            let pair: Vec<_> = evidence.try_iter().collect();
-            assert_eq!(
-                pair.len(),
-                2,
-                "{operation}: a file-deletion match publishes the file event and its decision"
-            );
-            // Correlation fails closed while referenced evidence is missing, so
-            // the file event has to precede the decision that names it.
-            let SecurityEventKind::FileAction(action) = &pair[0].kind else {
-                panic!("{operation}: the first published event must be the file action");
-            };
-            assert_eq!(action.operation, operation);
-            assert!(
-                !action.succeeded,
-                "{operation}: the denial must be recorded"
-            );
-            let SecurityEventKind::PolicyDecision(decision) = &pair[1].kind else {
-                panic!("{operation}: the second published event must be the decision");
-            };
-            assert_eq!(
-                pair[0].event_id, violation.event_id,
-                "{operation}: the violation row resolves its case through the file \
-                 evidence id, so a separate id here leaves the UI with nothing to link to"
-            );
-            // A denied file operation has no separate taint origin, so the
-            // decision names that one file event as both source and sink.
-            assert_eq!(
-                decision.source_event_id, pair[0].event_id,
-                "{operation}: the decision must reference the file event as its source"
-            );
-            assert_eq!(
-                decision.sink_event_id, pair[0].event_id,
-                "{operation}: the decision must reference the file event as its sink"
-            );
-        }
-    }
-
-    #[test]
-    fn a_file_deletion_violation_without_a_numeric_revision_publishes_no_case() {
-        // `active_binding` keeps the non-numeric revision from the request. A
-        // case carrying an invented revision would be evidence that cannot be
-        // audited, so the decision is dropped and the error is made visible.
-        let now = monotonic_now_ns().expect("monotonic clock should be readable");
-        let mut raw = raw_violation(now);
-        raw.op = 6;
-        let state = RuntimeState::new();
-        let violations = state
-            .events
-            .subscribe(Uuid::new_v4(), SubscriberClass::BestEffort);
-        let evidence = state.security_events.subscribe();
-
-        publish_raw_violation(raw, &active_binding(), &state);
-
-        assert!(
-            violations.try_recv().is_ok(),
-            "the raw violation is still published"
-        );
-        assert!(
-            evidence.try_iter().next().is_none(),
-            "no case evidence is published without a numeric revision"
-        );
-        assert!(
-            state.runtime_error().is_some(),
-            "the dropped case must leave a visible error"
-        );
-    }
-
-    #[test]
     fn trusted_endpoints_are_compared_as_addresses_with_optional_ports() {
         assert!(trusted_endpoint_covers("8.8.8.8", "8.8.8.8"));
         assert!(trusted_endpoint_covers("8.8.8.8", "8.8.8.8:443"));
@@ -2461,7 +2444,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 269_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.aws/credentials".into(),
@@ -2502,7 +2484,6 @@ mod tests {
         raw.provenance = Some(Provenance {
             label: 1,
             timestamp_ns: 269_000_000_000,
-            process_start_boottime: 9_876_500_000,
             pid: 43,
             op: 1,
             target: "/root/.aws/credentials".into(),
@@ -2643,13 +2624,6 @@ mod tests {
     }
 
     #[test]
-    fn root_event_start_time_uses_kernel_identity() {
-        let mut active = active_binding();
-        active.kernel_pid = 4100;
-        assert_eq!(process_start_time(&active, 4100, 0), 98765);
-    }
-
-    #[test]
     fn proc_start_time_handles_parenthesized_comm() {
         let stat = "42 (a tricky) name) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 98765";
         assert_eq!(parse_process_start_time(stat), Ok(98765));
@@ -2678,6 +2652,16 @@ mod tests {
         assert!(read_proc_text_lossy("/proc/2000000000/stat").is_err());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_nspid_from_status_survives_a_lossy_name_line() {
+        // /proc/<pid>/status leads with `Name:`, so a non-UTF-8 comm decodes
+        // lossily in front of the NSpid line the resolver needs.
+        let status = "Name:\tqoder\u{fffd}\nPid:\t39560\nNSpid:\t39560\t1\nTgid:\t39560\n";
+        assert_eq!(parse_nspid_from_status(status), vec![39560, 1]);
+        // Missing line stays empty.
+        assert!(parse_nspid_from_status("Pid:\t39560\n").is_empty());
     }
 
     #[test]
@@ -2771,5 +2755,35 @@ mod tests {
         );
 
         assert_eq!(event.occurred_at_ns, observed_at_ns);
+    }
+
+    #[test]
+    fn target_pid_visibility_is_required_outside_init_pidns() {
+        assert!(require_target_pid_visibility(true, false).is_ok());
+        assert!(require_target_pid_visibility(false, true).is_ok());
+        let error = require_target_pid_visibility(false, false)
+            .expect_err("container-local procfs must be refused");
+        assert!(
+            matches!(error, BackendError::UnsupportedEnvironment(_)),
+            "expected UnsupportedEnvironment, got: {error}"
+        );
+        assert!(
+            error.to_string().contains("init-namespace procfs"),
+            "message should name the requirement: {error}"
+        );
+    }
+
+    #[test]
+    fn apply_outside_init_pidns_is_refused_loudly() {
+        let error = require_init_pid_ns(false).expect_err("pid-ns enforcer must be refused");
+        assert!(
+            matches!(error, BackendError::UnsupportedEnvironment(_)),
+            "expected UnsupportedEnvironment, got: {error}"
+        );
+        assert!(
+            error.to_string().contains("init PID namespace"),
+            "message should name the requirement: {error}"
+        );
+        assert!(require_init_pid_ns(true).is_ok());
     }
 }

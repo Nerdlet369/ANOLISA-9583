@@ -1,7 +1,6 @@
 pub(crate) mod correlation;
 pub(crate) mod evidence;
 pub(crate) mod failed_command;
-pub(crate) mod guidance;
 pub(crate) mod memory;
 pub(crate) mod model;
 pub(crate) mod policy;

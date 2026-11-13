@@ -1,4 +1,6 @@
-//! Credential pair administration and shared public CA queries.
+//! Credential administration and Scope-owned gateway environment queries.
+
+use std::path::PathBuf;
 
 use crate::PeerCredentials;
 
@@ -7,11 +9,11 @@ use crate::PeerCredentials;
 pub enum GatewayFailureKind {
     /// Invalid request input.
     InvalidArgument,
-    /// Unknown credential pair or Scope.
+    /// Unknown credential or Scope.
     NotFound,
     /// Conflicting execution state.
     Conflict,
-    /// Caller lacks authority over the operation.
+    /// Caller lacks authority over the Scope.
     PermissionDenied,
     /// A bounded resource is exhausted.
     ResourceExhausted,
@@ -31,7 +33,16 @@ pub struct GatewayFailure {
     pub message: String,
 }
 
-/// Root pair operations and authenticated public gateway queries.
+/// Imports a real credential without replacing an active value or granting Scope access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayKeyRequest {
+    /// Credential identifier.
+    pub credential: String,
+    /// Caller-owned file containing the real value.
+    pub secret_file: PathBuf,
+}
+
+/// Root credential operations and authenticated Scope environment queries.
 pub trait GatewayAdministration: Send + Sync {
     /// Enables the gateway.
     /// # Errors
@@ -45,16 +56,28 @@ pub trait GatewayAdministration: Send + Sync {
     /// # Errors
     /// Returns execution-state projection failures.
     fn status(&self, peer: PeerCredentials) -> Result<serde_json::Value, GatewayFailure>;
-    /// Globally retires a credential pair and all its grants.
+    /// Imports a credential without replacing an active value or authorizing a Scope.
     /// # Errors
-    /// Returns unknown-pair, storage or publication failures.
-    fn remove_key(&self, pairid: &str) -> Result<serde_json::Value, GatewayFailure>;
-    /// Lists currently imported pair identifiers, without values.
+    /// Returns authorization, unsafe-file, storage or publication failures.
+    fn add_key(
+        &self,
+        peer: PeerCredentials,
+        request: GatewayKeyRequest,
+    ) -> Result<serde_json::Value, GatewayFailure>;
+    /// Globally retires a credential and all its grants.
+    /// # Errors
+    /// Returns unknown-credential, storage or publication failures.
+    fn remove_key(&self, credential: &str) -> Result<serde_json::Value, GatewayFailure>;
+    /// Lists currently imported credential identifiers.
     /// # Errors
     /// Returns credential storage or projection failures.
     fn list_keys(&self) -> Result<serde_json::Value, GatewayFailure>;
-    /// Returns the shared public CA bundle path, without Scope or credential values.
+    /// Returns only the caller's Scope fakes and ready CA environment.
     /// # Errors
-    /// Returns gateway-readiness or trust-bundle failures.
-    fn ca(&self, peer: PeerCredentials) -> Result<serde_json::Value, GatewayFailure>;
+    /// Returns authorization, stale-Scope or gateway-readiness failures.
+    fn credentials(
+        &self,
+        peer: PeerCredentials,
+        scope_id: &str,
+    ) -> Result<serde_json::Value, GatewayFailure>;
 }

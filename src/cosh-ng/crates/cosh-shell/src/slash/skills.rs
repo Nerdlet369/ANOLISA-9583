@@ -3,13 +3,6 @@ use serde_json::Value;
 use crate::runtime::prelude::*;
 use crate::slash::panel::render_notice_panel;
 
-fn text<'a>(i18n: &I18n, en: &'a str, zh: &'a str) -> &'a str {
-    match i18n.language() {
-        Language::EnUs => en,
-        Language::ZhCn => zh,
-    }
-}
-
 pub(super) fn render_skills_command<W: Write>(
     sub: Option<&str>,
     arg: Option<&str>,
@@ -41,7 +34,7 @@ pub(super) fn render_skills_command<W: Write>(
                 Err(e) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!("{}: {e}", text(&i18n, "Error", "错误"))],
+                    vec![format!("Error: {e}")],
                     None,
                 ),
             }
@@ -52,23 +45,20 @@ pub(super) fn render_skills_command<W: Write>(
                 return render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!(
-                        "{}: /skills detail <name>",
-                        text(&i18n, "Usage", "用法")
-                    )],
+                    vec!["Usage: /skills detail <name>".to_string()],
                     None,
                 );
             }
             let params = serde_json::json!({ "name": name });
             match cosh_core.registry_query("skills", "detail", params) {
                 Ok(data) => {
-                    let body = format_skill_detail(&data, &i18n);
+                    let body = format_skill_detail(&data);
                     render_notice_panel(output, i18n.t(MessageId::SlashSkillsTitle), body, None)
                 }
                 Err(e) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!("{}: {e}", text(&i18n, "Error", "错误"))],
+                    vec![format!("Error: {e}")],
                     None,
                 ),
             }
@@ -79,10 +69,7 @@ pub(super) fn render_skills_command<W: Write>(
                 return render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!(
-                        "{}: /skills enable <name>",
-                        text(&i18n, "Usage", "用法")
-                    )],
+                    vec!["Usage: /skills enable <name>".to_string()],
                     None,
                 );
             }
@@ -91,18 +78,13 @@ pub(super) fn render_skills_command<W: Write>(
                 Ok(_) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![text(
-                        &i18n,
-                        "  Skill \"{name}\" enabled.",
-                        "  技能“{name}”已启用。",
-                    )
-                    .replace("{name}", name)],
+                    vec![format!("  Skill \"{name}\" enabled.")],
                     None,
                 ),
                 Err(e) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!("{}: {e}", text(&i18n, "Error", "错误"))],
+                    vec![format!("Error: {e}")],
                     None,
                 ),
             }
@@ -113,10 +95,7 @@ pub(super) fn render_skills_command<W: Write>(
                 return render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!(
-                        "{}: /skills disable <name>",
-                        text(&i18n, "Usage", "用法")
-                    )],
+                    vec!["Usage: /skills disable <name>".to_string()],
                     None,
                 );
             }
@@ -125,18 +104,13 @@ pub(super) fn render_skills_command<W: Write>(
                 Ok(_) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![text(
-                        &i18n,
-                        "  Skill \"{name}\" disabled.",
-                        "  技能“{name}”已禁用。",
-                    )
-                    .replace("{name}", name)],
+                    vec![format!("  Skill \"{name}\" disabled.")],
                     None,
                 ),
                 Err(e) => render_notice_panel(
                     output,
                     i18n.t(MessageId::SlashSkillsTitle),
-                    vec![format!("{}: {e}", text(&i18n, "Error", "错误"))],
+                    vec![format!("Error: {e}")],
                     None,
                 ),
             }
@@ -145,36 +119,11 @@ pub(super) fn render_skills_command<W: Write>(
             output,
             i18n.t(MessageId::SlashSkillsTitle),
             vec![
-                text(
-                    &i18n,
-                    "Usage: /skills <subcommand>",
-                    "用法: /skills <subcommand>",
-                )
-                .to_string(),
-                text(
-                    &i18n,
-                    "  list              List all skills",
-                    "  list              列出所有技能",
-                )
-                .to_string(),
-                text(
-                    &i18n,
-                    "  detail <name>     Show skill details",
-                    "  detail <name>     查看技能详情",
-                )
-                .to_string(),
-                text(
-                    &i18n,
-                    "  enable <name>     Enable a disabled skill",
-                    "  enable <name>     启用已禁用的技能",
-                )
-                .to_string(),
-                text(
-                    &i18n,
-                    "  disable <name>    Disable a skill",
-                    "  disable <name>    禁用技能",
-                )
-                .to_string(),
+                "Usage: /skills <subcommand>".to_string(),
+                "  list              List all skills".to_string(),
+                "  detail <name>     Show skill details".to_string(),
+                "  enable <name>     Enable a disabled skill".to_string(),
+                "  disable <name>    Disable a skill".to_string(),
             ],
             None,
         ),
@@ -203,10 +152,7 @@ pub(super) fn format_skills_list(data: &Value, i18n: &I18n) -> Vec<String> {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if disabled {
-                Some(format!(
-                    "  ○ {name} [{level}] [{}]",
-                    text(i18n, "disabled", "已禁用")
-                ))
+                Some(format!("  ○ {name} [{level}] [disabled]"))
             } else {
                 Some(format!("  • {name} [{level}]"))
             }
@@ -214,19 +160,19 @@ pub(super) fn format_skills_list(data: &Value, i18n: &I18n) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn format_skill_detail(data: &Value, i18n: &I18n) -> Vec<String> {
+pub(super) fn format_skill_detail(data: &Value) -> Vec<String> {
     let mut lines = Vec::new();
     if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
-        lines.push(format!("  {}: {name}", text(i18n, "Name", "名称")));
+        lines.push(format!("  Name: {name}"));
     }
     if let Some(desc) = data.get("description").and_then(|v| v.as_str()) {
-        lines.push(format!("  {}: {desc}", text(i18n, "Description", "描述")));
+        lines.push(format!("  Description: {desc}"));
     }
     if let Some(level) = data.get("level").and_then(|v| v.as_str()) {
-        lines.push(format!("  {}: {level}", text(i18n, "Level", "级别")));
+        lines.push(format!("  Level: {level}"));
     }
     if let Some(base_dir) = data.get("base_dir").and_then(|v| v.as_str()) {
-        lines.push(format!("  {}: {base_dir}", text(i18n, "Base Dir", "目录")));
+        lines.push(format!("  Base Dir: {base_dir}"));
     }
     lines
 }

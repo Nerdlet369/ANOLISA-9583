@@ -141,7 +141,10 @@ fn raw_cli_fresh_home_initializes_recommendation_store() {
         ],
         &home,
         &[
-            ("Prompt recommendations are on;", b"/recommendations on\n"),
+            (
+                "Prompt recommendations are on; the current AI uses recent Shell and Agent activity.",
+                b"/recommendations on\n",
+            ),
             ("Prompt recommendations are on.", b"exit\n"),
         ],
     );
@@ -149,11 +152,6 @@ fn raw_cli_fresh_home_initializes_recommendation_store() {
     assert!(
         output.contains("Prompt recommendations are on."),
         "{output}"
-    );
-    let first_notice = output.find("Prompt recommendations are on;").unwrap();
-    assert!(
-        output[..first_notice].contains('╯'),
-        "first-time disclosure belongs outside the welcome card: {output}"
     );
     assert!(
         home.join(".copilot-shell/cosh/recommendations/state.json")

@@ -64,38 +64,6 @@ AW 每次生成 invocation UUID 配对，原工具 ID 保留于 `native`，提�
 文本；扫描故障丢弃完整结果并返回固定占位文本，同一会话可继续后续输入。
 未配置严格路由的目标保留原生流及 Tokenless report 行为。
 
-## 原生启动与空闲策略更新
-
-原生 Node 宿主可以在启动时准备 AW，再在自身进程中运行已有
-`createSession` 与 `runWorker` 或 `run` 工厂。工作目录中的 `aw.yaml` 以 `pi` 指定工厂应用及其
-已安装 SDK。将下面的准备代码加入宿主，重启一次，随后使用
-`node native-host.mjs` 启动。
-
-```javascript
-import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
-
-const aw = "aw";
-const prepared = JSON.parse(execFileSync(aw,
-  ["instance", "prepare", "--agent", "pi"], { encoding: "utf8" }));
-Object.assign(process.env, prepared.environment);
-try {
-  const { runNativeWorker } = await import(pathToFileURL(prepared.command.args[0]));
-  await runNativeWorker({ application: prepared.command.args[1], args: prepared.command.args.slice(2) });
-} finally {
-  execFileSync(aw, ["instance", "release", "--binding", prepared.binding]);
-}
-```
-
-宿主报告 Ready 后，在配置目录执行 `aw instance update --agent pi`。
-每个会话在 prompt、工具回调与销毁期间保留同一份策略。会话未关闭、工厂正在准备
-或清理尚未确认时，更新会被拒绝；关闭全部会话后再更新。新建会话采用新策略，
-包括输入和 Skill 检查。严格结果控制仍要求两个 Pi 包均为 0.84.2。
-准备失败时不会开放任务派发，全部会话关闭后才能释放实例。应用导出
-`run(session, context)` 时，原生启动入口创建首个受管会话，并在 `context` 中提供
-`createSession` 和 `closeSession`。更新实例前需要关闭所有活动会话；`run` 返回时
-清理尚未关闭的会话。`input.submit` 继续要求 `runWorker`，策略更新后也遵守该限制。
-
 ## 检查用户输入
 
 [Pi 输入检查示例](../../../../../src/aw/crates/aw-service/examples/aw.pi-submission.yaml)
@@ -170,12 +138,3 @@ Provider 用现有 V2 Ledger 返回的 `manifestHash` 认证本地清单，再�
 `skill_not_requested`，不调用 Ledger。未知 Skill、独立 Markdown 文件以及同名扩展命令
 无法提供受检来源。自动注入上下文、直接读文件及 Skill 内部命令需在各自执行点配置策略。
 仅使用 pi-agent-core 的应用需要先提供业务 Skill 加载器，才能采用此 Coding Agent 来源合同。
-
-
-## 任务观测
-
-启用 `evidence` 后，每个已确认的托管 Session 独立持有有界观测任务。已配置的原生 Hook
-调用产生回调元数据；Session 关闭时等待在途读取结束并释放来源会话声明。证据查询失败不会
-阻断已准入的工具调用。Pi 和 Claude SDK 沿用现有来源身份范围：回调关联保持 `unverified`，
-覆盖保持 `unknown`，AW 不宣称 AgentSight 历史属于该 SDK Session。这两个 Adapter 的空工具
-策略不会额外安装合成观测回调。

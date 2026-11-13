@@ -1,7 +1,5 @@
 //! QwenPaw App middleware; the native runtime owns tool scheduling.
 
-mod probe;
-
 use crate::{
     adapter::{
         self, Adapter, HookEvent, HookOutput, LaunchContext, LaunchInput, LaunchPlan,
@@ -26,7 +24,6 @@ struct Prepared {
     input: LaunchInput,
     version: String,
     working: PathBuf,
-    interpreter: Option<String>,
     plugin: Option<OwnedPlugin>,
 }
 
@@ -174,7 +171,8 @@ impl Adapter for QwenPaw {
                 );
             }
         }
-        let (output, interpreter) = probe::inspect(&input.command, cancelled)?;
+        let output =
+            adapter::Probe(cancelled).version_output(&input.command, &["--version".into()])?;
         let version = crate::version::reported(
             output
                 .strip_prefix("QwenPaw, version ")
@@ -185,7 +183,6 @@ impl Adapter for QwenPaw {
             input,
             version,
             working,
-            interpreter,
             plugin: None,
         }))
     }
@@ -223,6 +220,13 @@ impl PreparedLaunch for Prepared {
     }
 
     fn validate_steps(&self, steps: &[AdmittedStep]) -> Result<()> {
+        if !self.input.options.reloadable
+            && adapter::observation_enabled(&self.input.document, &self.input.target)
+        {
+            return Err(
+                "QwenPaw resident task scopes do not support native evidence capture".into(),
+            );
+        }
         if self.input.options.reloadable {
             crate::reload::validate(
                 &self.input.document,
@@ -230,26 +234,16 @@ impl PreparedLaunch for Prepared {
                 &self.capabilities(),
             )?;
         }
-        event_routes(&self.input.document, steps, true).map(|_| ())
+        event_routes(
+            &self.input.document,
+            steps,
+            adapter::observation_enabled(&self.input.document, &self.input.target),
+        )
+        .map(|_| ())
     }
 
     fn configure(&mut self, context: &LaunchContext<'_>) -> Result<LaunchPlan> {
-        if self.input.options.resident_policy_reload {
-            let mut plan = self.configure_in(context, context.files.directory())?;
-            let plugin = self.plugin.as_mut().ok_or("missing staged plugin")?;
-            // The independent binding owns these assets until explicit release.
-            plugin.cleanup_on_drop = false;
-            plan.command.environment.insert(
-                "AW_QWENPAW_PLUGIN".into(),
-                plugin.path.clone().into_os_string(),
-            );
-            Ok(plan)
-        } else {
-            match (self.input.options.reloadable, self.interpreter.clone()) {
-                (false, Some(interpreter)) => self.configure_managed(context, &interpreter),
-                _ => self.configure_in(context, &self.working.clone()),
-            }
-        }
+        self.configure_in(context, &self.working.clone())
     }
 
     fn attachment(
@@ -313,28 +307,6 @@ impl PreparedLaunch for Prepared {
 }
 
 impl Prepared {
-    fn configure_managed(
-        &mut self,
-        context: &LaunchContext<'_>,
-        interpreter: &str,
-    ) -> Result<LaunchPlan> {
-        let mut plan = self.configure_in(context, context.files.directory())?;
-        let plugin = self.plugin.as_ref().ok_or("missing staged plugin")?;
-        let launcher = context.files.write(
-            "qwenpaw-launch.py",
-            include_bytes!("../../native/qwenpaw/launch.py"),
-        )?;
-        let mut args = vec![
-            launcher.into_os_string(),
-            plan.command.program.into_os_string(),
-            plugin.path.clone().into_os_string(),
-        ];
-        args.extend(plan.command.args);
-        plan.command.program = interpreter.into();
-        plan.command.args = args;
-        Ok(plan)
-    }
-
     fn configure_in(
         &mut self,
         context: &LaunchContext<'_>,
@@ -343,7 +315,11 @@ impl Prepared {
         let (events, hooks) = if self.input.options.reloadable {
             (crate::reload::routes(), Vec::new())
         } else {
-            event_routes(&self.input.document, context.steps, true)?
+            event_routes(
+                &self.input.document,
+                context.steps,
+                adapter::observation_enabled(&self.input.document, &self.input.target),
+            )?
         };
         let token = fs::read_to_string("/proc/sys/kernel/random/uuid")?
             .trim()
@@ -429,7 +405,7 @@ pub(crate) fn event_routes(
     let mut hooks = Vec::new();
     // After wrappers are outermost, so they also observe an inner before denial.
     for event in ["tool.after", "tool.before", "input.submit"] {
-        let selected = adapter::native_steps(steps, event, observe && event != "input.submit");
+        let selected = adapter::native_steps(steps, event, observe);
         if selected.is_empty() {
             continue;
         }
@@ -550,7 +526,6 @@ mod tests {
                     },
                 },
                 working: "/".into(),
-                interpreter: None,
                 plugin: None,
             };
             assert_eq!(
@@ -615,75 +590,5 @@ mod tests {
             events["tool.after"].replacement_step.as_deref(),
             Some("compress")
         );
-    }
-
-    #[test]
-    fn managed_console_uses_private_registry_and_other_modes_keep_native_plugins() {
-        for (reloadable, factory, literal) in [
-            (false, false, true),
-            (true, false, true),
-            (false, true, true),
-            (false, false, false),
-        ] {
-            let root = tempfile::tempdir().unwrap();
-            let working = root.path().join("home");
-            fs::create_dir(&working).unwrap();
-            let launch = root.path().join("launch");
-            fs::create_dir(&launch).unwrap();
-            let files = crate::test_support::Artifacts(launch);
-            let mut prepared = Prepared {
-                input: LaunchInput {
-                    document: json!({"spec":{"events":{},"execution":{"default_event_budget_ms":5000}}}),
-                    target: "qwenpaw".into(),
-                    options: adapter::NativeOptions {
-                        reloadable,
-                        resident_policy_reload: factory,
-                        ..Default::default()
-                    },
-                    command: aw_exec::CommandSpec {
-                        program: "/venv/bin/qwenpaw".into(),
-                        args: vec!["app".into(), "--port".into(), "8096".into()],
-                        cwd: root.path().into(),
-                        environment: BTreeMap::new(),
-                    },
-                },
-                version: "2.1.1b3".into(),
-                working: working.clone(),
-                interpreter: literal.then(|| "/venv/bin/python3".into()),
-                plugin: None,
-            };
-            let plan = prepared
-                .configure(&LaunchContext {
-                    files: &files,
-                    binding_path: &files.0.join("binding.json"),
-                    executable: &root.path().join("aw"),
-                    steps: &[],
-                })
-                .unwrap();
-            let managed = !reloadable && !factory && literal;
-            if managed {
-                assert_eq!(plan.command.program, PathBuf::from("/venv/bin/python3"));
-                assert_eq!(
-                    plan.command.args[0],
-                    files.0.join("qwenpaw-launch.py").as_os_str()
-                );
-                assert_eq!(plan.command.args[1], "/venv/bin/qwenpaw");
-                assert_eq!(&plan.command.args[3..], &["app", "--port", "8096"]);
-                assert!(!working.join("plugins").exists());
-            } else {
-                assert_eq!(plan.command.program, PathBuf::from("/venv/bin/qwenpaw"));
-                assert!(!files.0.join("qwenpaw-launch.py").exists());
-                assert_eq!(working.join("plugins").exists(), !factory);
-            }
-            assert_eq!(
-                plan.readiness.unwrap().hooks,
-                if reloadable { 0 } else { 2 }
-            );
-            if !factory {
-                prepared.finish().unwrap();
-                assert!(!working.join("plugins").exists());
-                assert!(!files.0.join("plugins").exists());
-            }
-        }
     }
 }

@@ -279,13 +279,6 @@ skillfs validate /path/to/skills --format json
 failures are included in the status summary and produce a non-zero exit code;
 degraded-only skills are reported but keep exit code 0.
 
-In `SKILL.md`, `## Parameters` and `## Returns` headings accept an optional
-closing sequence of `#` characters, such as `## Parameters ##` or
-`## Returns #`. Separate that sequence from the title with a space or Tab;
-only spaces or Tabs may follow it. Contract entries under these headings
-are parsed normally, and malformed bullets produce a warning and a
-`degraded` status.
-
 In JSON output, error and warning entries include a `path` field so consumers
 can locate the exact offending skill file.
 
@@ -396,20 +389,6 @@ including neighboring shell commands, inline code in lists or prose, and command
 followed by parenthetical notes. Each inline code span is inspected separately.
 Interpreter-specific `python -m pip` calls remain unchanged. Unfinished arguments,
 line continuations, and command substitutions also keep the original pip invocation.
-
-Pip is also preserved when `PIP_USER` is present in the mount-startup environment
-snapshot or referenced before the invocation on the same line, including
-`PIP_USER=1 pip install requests` and `export PIP_USER=1; pip install requests`.
-This check is conservative: it preserves pip even for empty or false values and
-after overrides or `unset`, without evaluating shell state. Remount after
-changing the mount process's environment. Assignments on earlier document lines
-are outside this check.
-
-Known pip-only options `--root`, `--report`, `--platform`, `--implementation`,
-`--abi`, and `--upgrade-strategy` also preserve pip, with both `--option value`
-and `--option=value` spellings. For example, `pip install --root=/tmp/rootz requests`
-stays unchanged. These options are checked within each invocation's arguments;
-ordinary installs in neighboring commands can still use uv.
 
 When heuristic normalization selects Yarn, only a bare `npm install` is rewritten
 to `yarn install`. Install commands with package names, flags, or redirections

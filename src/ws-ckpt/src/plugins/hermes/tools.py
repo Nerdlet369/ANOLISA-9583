@@ -699,13 +699,13 @@ def handle_ws_ckpt_checkpoint(args: Dict[str, Any], **_kwargs) -> str:
     return _ok(output) if success else _err(output)
 
 
-def handle_ws_ckpt_rollback(
-    args: Dict[str, Any], session_id: str = "", **_kwargs: Any
-) -> str:
+def handle_ws_ckpt_rollback(args: Dict[str, Any], **_kwargs) -> str:
     """Handle ws-ckpt-rollback tool call."""
     target = (args.get("target") or "").strip()
     num_ancestors = args.get("num_ancestors")
     preview_arg = args.get("preview", False)
+    if preview_arg is None:
+        preview_arg = False
     if isinstance(preview_arg, str):
         # Tool callers serialize booleans too; an unrecognised spelling must
         # not fall through to False, because False performs the rollback the
@@ -713,7 +713,7 @@ def handle_ws_ckpt_rollback(
         normalized = preview_arg.strip().lower()
         if normalized in ("true", "1", "yes", "on"):
             preview_arg = True
-        elif normalized in ("false", "0", "no", "off"):
+        elif normalized in ("false", "0", "no", "off", ""):
             preview_arg = False
         else:
             return _err("'preview' must be a boolean")
@@ -726,16 +726,12 @@ def handle_ws_ckpt_rollback(
     if not target and num_ancestors is None:
         return _err("either 'target' or 'num_ancestors' is required")
     if num_ancestors is not None:
-        # JSON Schema `integer` admits 2.0 and 2e0, which json.loads yields as
-        # float; accept those like the OpenClaw host does, reject 2.9/bool/str.
-        if isinstance(num_ancestors, float) and num_ancestors.is_integer():
+        try:
             num_ancestors = int(num_ancestors)
-        if (
-            isinstance(num_ancestors, bool)
-            or not isinstance(num_ancestors, int)
-            or num_ancestors < 1
-        ):
+        except (ValueError, TypeError):
             return _err("'num_ancestors' must be an integer >= 1")
+    if num_ancestors is not None and num_ancestors < 1:
+        return _err("'num_ancestors' must be >= 1")
 
     workspace, ws_err = _resolve_workspace(args)
     if ws_err:
@@ -759,7 +755,7 @@ def handle_ws_ckpt_rollback(
         cmd.append("--preview")
     success, output = _run_ws_ckpt_cmd(cmd)
     if success and registration is not None:
-        get_manager().remember_rollback(registration, session_id)
+        get_manager().skip_auto_checkpoint_workspaces.add(registration)
     return _ok(output) if success else _err(map_error_to_message(output))
 
 

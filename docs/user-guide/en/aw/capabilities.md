@@ -9,16 +9,16 @@ AW shares tool checks, result processing and custom rules across Agents. Adapter
 ✓ Declared with contract coverage; × unsupported. Result replacement is limited to authorized text slots and preserves native envelopes and failure status.
 
 <!-- aw-regression-matrix:start -->
-| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.before` / `replace_input` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `openclaw` | ✓ | ✓ | × | ✓ | ✓ | × | × |
-| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Agent | `tool.before` / `observe` | `tool.before` / `block` | `tool.after` / `observe` | `tool.after` / `replace_result` | `input.submit` / `observe` | `input.submit` / `block` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `agentscope` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `claude-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `hermes` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `openclaw` | ✓ | ✓ | ✓ | ✓ | × | × |
+| `pi` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qoder-sdk` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `qwenpaw` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 <!-- aw-regression-matrix:end -->
 `tool.before` can observe or block; `tool.after` can observe or replace results through a structured Provider. Boolean scripts and native commands cannot request result replacement.
 Configuration can [select steps by tool](configuration.md#select-tools-for-a-hook-step); native permissions and denial retain precedence.
@@ -111,25 +111,14 @@ Native acceptance is registered as `private-lease` and `private-native` in the
 
 | Entrypoint | Managed MCP | Idle policy updates |
 | --- | --- | --- |
-| Qoder SDK | In-process handlers with Query identity | Ordinary or prepared native factory; all Queries must close |
-| QwenPaw App | Explicitly wrapped MCP client calls | Ordinary or prepared native App; all replies and cleanup must drain |
-| AgentScope SDK | Exposed native tool callbacks | Ordinary or prepared native factory; reply, tool and Scope cleanup must finish |
-| Claude SDK resident | In-process handlers; single-text result compression, `report` faults keep the original result | Prepared native factory; all clients must disconnect and finish cleanup |
-| Pi SDK | MCP clients exposed as managed custom tools | Prepared native worker factory; all sessions must close |
-| OpenClaw Gateway | Exposed native tool callbacks | Prepared native Gateway; successful run completion and drained tool callbacks |
-| Hermes local chat | Exposed native tool callbacks | Prepared native chat; confirmed completed turn and drained callbacks |
-| Qoder CLI | Exposed native tool callbacks | Prepared native TUI/print; TUI also supports pre-request attachment or `--reloadable`; requests and cleanup must finish |
+| Qoder SDK | In-process handlers with Query identity | Ordinary resident mode, after all Queries close |
+| QwenPaw App | Explicitly wrapped MCP client calls | Ordinary resident mode, after all replies drain |
+| Claude SDK resident | In-process handlers; single-text result compression, `report` faults keep the original result | Restart required |
+| Pi SDK | MCP clients exposed as managed custom tools | Restart required |
+| AgentScope SDK | Exposed native tool callbacks | Ordinary factory replies support updates after Scope cleanup |
+| Qoder CLI, OpenClaw, Hermes | Exposed native tool callbacks | Ordinary mode requires restart |
 
-Each native startup route requires the framework's documented preparation. SDK
-applications retain their AW factories; OpenClaw, Hermes and QwenPaw require
-one-time startup setup and a restart. Qoder TUI uses its existing exclusive-profile
-attachment before the first request. An unprepared running process has no ready
-AW instance. With that boundary installed, `aw instance update --agent TARGET`
-loads the default `aw.yaml` after the relevant work drains. Ordinary `aw run`
-Pi, Claude SDK, OpenClaw and Hermes keep their existing restart requirement.
-Qoder SDK and QwenPaw retain restricted `--reloadable` modes; QwenPaw also
-retains its restricted external-attachment route. See [policy updates](../../../developer-guide/en/aw/deployment/policy-updates.md)
-for the supported entrypoints and cleanup limits.
+Qoder TUI, Qoder SDK and QwenPaw also offer restricted update modes. See [policy updates](../../../developer-guide/en/aw/deployment/policy-updates.md) for versions and deployment.
 Configure MCP security checks for actual input semantics; see [Qoder SDK / QwenPaw MCP wiring](../../../../src/aw/docs/design/en/adapters/structured-mcp.md) and [Claude SDK MCP wiring](../../../../src/aw/docs/design/en/adapters/claude-mcp.md).
 
 Qoder SDK applications can also integrate pinned Bash credential consumers, Worker

@@ -57,7 +57,7 @@ macro_rules! collect_message_ids {
     };
 }
 
-// Segment order groups local translation keys; numbers are not a wire format.
+// Segment order preserves the public fieldless enum's existing discriminants.
 collect_message_ids!([
     startup_ids,
     help_core_ids,
@@ -116,9 +116,4 @@ collect_message_ids!([
     auth_ecs_ids,
     startup_upgrade_ids,
     bug_report_ids,
-    guide_command_ids,
-    startup_guidance_ids,
-    health_guidance_ids,
-    startup_welcome_ids,
-    login_command_ids,
 ],);

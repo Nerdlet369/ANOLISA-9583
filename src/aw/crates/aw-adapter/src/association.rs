@@ -44,24 +44,13 @@ fn matches_native(
     let after = event["name"] == "tool.after";
     let tool = &event["tool"];
     let (session, call, name, input, result, seam) = match adapter {
-        "qoder" | "qoder-sdk" => (
+        "qoder" => (
             native["session_id"].clone(),
             native["tool_use_id"].clone(),
             native["tool_name"].clone(),
             native["tool_input"].clone(),
-            if native["hook_event_name"] == "PostToolUseFailure" {
-                json!({"is_error":true,"error":native["error"],"is_interrupt":native["is_interrupt"]})
-            } else {
-                native["tool_response"].clone()
-            },
-            if after {
-                matches!(
-                    native["hook_event_name"].as_str(),
-                    Some("PostToolUse" | "PostToolUseFailure")
-                )
-            } else {
-                native["hook_event_name"] == "PreToolUse"
-            },
+            native["tool_response"].clone(),
+            native["hook_event_name"] == if after { "PostToolUse" } else { "PreToolUse" },
         ),
         "qwenpaw" => (
             native["session_id"].clone(),
@@ -160,15 +149,7 @@ fn matches_native(
         && event["session_id"] == session
         && tool["call_id"] == call
         && native_name == name
-        && (tool["name"] == name
-            || (adapter == "qoder-sdk"
-                && tool["name"]
-                    == match name.as_str() {
-                        Some("Bash") => "bash",
-                        Some("Read") => "file_read",
-                        Some("Write" | "Edit") => "file_write",
-                        _ => "",
-                    }))
+        && tool["name"] == name
         && tool["input"] == input
         && tool["result"] == result
 }
@@ -183,29 +164,4 @@ pub fn source_matches_adapter(adapter: &Value, name: &Value) -> bool {
             | (Some("openclaw"), Some("openclaw" | "OpenClaw"))
             | (Some("qwenpaw"), Some("qwenpaw"))
     )
-}
-
-/// Retains native IDs separately from AW-normalized invocation identities.
-/// Missing or malformed native fields remain null.
-pub fn native_references(adapter: &str, event: &Value) -> Value {
-    let native = &event["native"];
-    let call = match adapter {
-        "qoder-sdk" => native
-            .get("aw_native_tool_use_id")
-            .unwrap_or(&native["tool_use_id"]),
-        "qoder" | "claude-sdk" => &native["tool_use_id"],
-        "qwenpaw" | "agentscope" | "pi" => &native["tool_call"]["id"],
-        "hermes" => &native["extra"]["tool_call_id"],
-        _ => &Value::Null,
-    };
-    let reference = |normalized: &Value, raw: &Value| {
-        if identifier(normalized).is_none() {
-            Value::Null
-        } else {
-            json!(identifier(raw))
-        }
-    };
-    json!({"sessionId":reference(&event["session_id"],&native["session_id"]),
-        "turnId":reference(&event["turn_id"],&native["turn_id"]),
-        "toolCallId":reference(&event["tool"]["call_id"],call),"modelCallId":null})
 }

@@ -61,7 +61,7 @@ fn initial() -> ReconcileRecord {
 }
 
 #[test]
-fn cedar_file_protections_flow_through_pap_sqlite_reconciler_and_http() {
+fn cedar_delete_and_write_flow_through_pap_sqlite_reconciler_and_http() {
     use asc_pap::{PapService, ScopeBindingSink};
     use asc_policy_types::scope::{PolicyReference, ScopeSelector};
     use asc_policy_types::target::TranslationOutcome;
@@ -77,28 +77,18 @@ fn cedar_file_protections_flow_through_pap_sqlite_reconciler_and_http() {
         }
     }
 
-    for (source, delete, write, read) in [
+    for (source, delete, write) in [
         (
             include_str!(
                 "../../../fixtures/adapters/agentsight/cedar-file-protection/prevent-delete.json"
             ),
             true,
             false,
-            false,
         ),
         (
             include_str!(
                 "../../../fixtures/adapters/agentsight/cedar-file-protection/prevent-write.json"
             ),
-            false,
-            true,
-            false,
-        ),
-        (
-            include_str!(
-                "../../../fixtures/adapters/agentsight/cedar-file-protection/prevent-read.json"
-            ),
-            false,
             false,
             true,
         ),
@@ -137,12 +127,8 @@ fn cedar_file_protections_flow_through_pap_sqlite_reconciler_and_http() {
         let payload: Value = serde_json::from_slice(&prepared.content).unwrap();
         let bytes: Vec<u8> = serde_json::from_value(payload["request"].clone()).unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
-        let expected = if read {
-            json!({"version":1,"topology_mode":"static_at_apply","targets":[{
-                "path":"/workspace/secret","kind":"exact_file",
-                "protections":{"delete":false,"ordinary_write":false,"read":true},"exclusions":[]
-            }]})
-        } else {
+        assert_eq!(
+            body["file_protection_policy"],
             json!({
                 "version":1,"topology_mode":"static_at_apply","targets":[{
                     "path":"/workspace","kind":"directory_tree",
@@ -150,20 +136,18 @@ fn cedar_file_protections_flow_through_pap_sqlite_reconciler_and_http() {
                     "exclusions":[{"path":"/workspace/cache","kind":"directory_subtree"}]
                 }]
             })
-        };
-        assert_eq!(body["file_protection_policy"], expected);
+        );
         assert!(body.get("policy_dsl").is_none());
-        let mut health = structured_health();
-        if read {
-            health["capabilities"]["file_read_protection"] = json!(true);
-        }
         let inspect_repo = repo.clone();
         let inspect_id = id.clone();
         let server = MockHttp::start(
             vec![
                 Exchange {
                     request: request(AgentSightHttpMethod::Get, ENFORCEMENT_HEALTH_PATH, None),
-                    response: Some(response(200, &serde_json::to_vec(&health).unwrap())),
+                    response: Some(response(
+                        200,
+                        &serde_json::to_vec(&structured_health()).unwrap(),
+                    )),
                 },
                 Exchange {
                     request: request(

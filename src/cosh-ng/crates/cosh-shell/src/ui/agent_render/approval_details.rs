@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{block::Padding, Block, Paragraph, Widget},
+    widgets::{block::Padding, Block, Paragraph, Widget, Wrap},
 };
 
 use super::{
@@ -189,12 +189,7 @@ fn approval_details_panel_height(
         .map(|assessment| assessment_summary_rows(i18n, assessment, content_width).len() as u16)
         .unwrap_or(0);
     let audit_rows = audit_ref_rows(model.audit_ref, content_width).len() as u16;
-    let policy_rows = wrapped_preview_rows(
-        i18n.t(crate::MessageId::ApprovalExecutableToolPolicy),
-        content_width,
-        usize::MAX,
-    );
-    10 + preview_rows + assessment_rows + audit_rows + policy_rows.len() as u16
+    11 + preview_rows + assessment_rows + audit_rows
 }
 
 fn render_approval_details_panel(
@@ -232,11 +227,6 @@ fn render_approval_details_panel(
     // Same content width as `approval_details_panel_height`, so a wrapped
     // reference can never exceed its allocated rows.
     let audit_rows = audit_ref_rows(model.audit_ref, inner.width as usize);
-    let policy_rows = wrapped_preview_rows(
-        i18n.t(crate::MessageId::ApprovalExecutableToolPolicy),
-        inner.width as usize,
-        usize::MAX,
-    );
     let risk = i18n.format(
         crate::MessageId::ApprovalRiskSuffix,
         &[("risk", model.risk)],
@@ -253,7 +243,7 @@ fn render_approval_details_panel(
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(preview_rows.len().max(1) as u16),
-        Constraint::Length(policy_rows.len() as u16),
+        Constraint::Length(1),
     ])
     .split(inner);
 
@@ -400,13 +390,9 @@ fn render_approval_details_panel(
             .collect::<Vec<_>>(),
     ))
     .render(chunks[10], buffer);
-    Paragraph::new(Text::from(
-        policy_rows
-            .into_iter()
-            .map(|line| Line::from(Span::raw(line)))
-            .collect::<Vec<_>>(),
-    ))
-    .render(chunks[11], buffer);
+    Paragraph::new(i18n.t(crate::MessageId::ApprovalExecutableToolPolicy))
+        .wrap(Wrap { trim: true })
+        .render(chunks[11], buffer);
 }
 
 fn assessment_summary_line(

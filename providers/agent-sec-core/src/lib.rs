@@ -6,7 +6,6 @@ pub mod pii;
 mod prompt;
 mod scan;
 mod skill;
-mod startup;
 mod tool_pii;
 mod trace_context;
 
@@ -40,37 +39,6 @@ pub fn run(
     socket: &Path,
     timeout: Duration,
 ) -> Result<(), Error> {
-    run_inner(input, output, cli, socket, timeout, false)
-}
-
-/// Wait for an externally started backend on the first backend-dependent call.
-///
-/// Discovery and private configuration validation remain offline. Socket
-/// appearance is only a startup barrier: the CLI still authenticates its peer
-/// and performs the requested check. Waiting and scanning share the invocation
-/// budget; no daemon is started and no scan is retried.
-///
-/// # Errors
-/// Returns the same framing and protocol errors as [`run`]. Startup failure is
-/// a Provider error response, never a successful scan or a security decision.
-pub fn run_with_backend_wait(
-    input: &mut impl Read,
-    output: &mut impl Write,
-    cli: &Path,
-    socket: &Path,
-    timeout: Duration,
-) -> Result<(), Error> {
-    run_inner(input, output, cli, socket, timeout, true)
-}
-
-fn run_inner(
-    input: &mut impl Read,
-    output: &mut impl Write,
-    cli: &Path,
-    socket: &Path,
-    timeout: Duration,
-    wait_for_backend: bool,
-) -> Result<(), Error> {
     let started = Instant::now();
     let mut bytes = Vec::new();
     input
@@ -82,7 +50,7 @@ fn run_inner(
     let mut reply = json!({
         "api_version": VERSION, "request_id": value["request_id"], "status": "ok"
     });
-    match dispatch(&request, cli, socket, timeout, started, wait_for_backend) {
+    match dispatch(&request, cli, socket, timeout, started) {
         Ok(fields) => reply.as_object_mut().ok_or(Error::Internal)?.extend(fields),
         Err(code) => {
             reply["status"] = json!("error");
@@ -105,7 +73,6 @@ fn dispatch(
     socket: &Path,
     timeout: Duration,
     started: Instant,
-    wait_for_backend: bool,
 ) -> Result<serde_json::Map<String, Value>, &'static str> {
     let value = request.as_value();
     if value["method"] == "describe" {
@@ -126,19 +93,13 @@ fn dispatch(
     if value["method"] == "validate_config" {
         return Ok(serde_json::Map::new());
     }
-    remaining_budget(value, timeout, started)?;
-    let backend_budget = || {
-        if wait_for_backend {
-            startup::wait(socket, remaining_budget(value, timeout, started)?)?;
-        }
-        remaining_budget(value, timeout, started)
-    };
+    let remaining = remaining_budget(value, timeout, started)?;
     let event = &value["event"];
     if matches!(
         value["operation"].as_str(),
         Some("scan_tool_input" | "scan_tool_output")
     ) {
-        let fields = tool_pii::invoke(value, &config, cli, socket, backend_budget)?;
+        let fields = tool_pii::invoke(value, &config, cli, socket, remaining)?;
         remaining_budget(value, timeout, started)?;
         return Ok(fields);
     }
@@ -156,7 +117,7 @@ fn dispatch(
                 socket,
                 text,
                 &trace_context::from_event(event),
-                backend_budget,
+                remaining,
             )?;
             match (mode, verdict) {
                 (Mode::Block, scan::Verdict::Risk) => ("block", "prompt_risk"),
@@ -178,7 +139,7 @@ fn dispatch(
                 text,
                 pii::Source::UserInput,
                 &trace_context::from_event(event),
-                backend_budget()?,
+                remaining,
             )
             .map_err(|error| error.code())?;
             match (mode, verdict) {
@@ -205,7 +166,7 @@ fn dispatch(
             } else if event["agent"]["adapter"] != "pi" {
                 return Err("skill_source_unmapped");
             }
-            let reason = skill::call(cli, socket, event, backend_budget)?;
+            let reason = skill::call(cli, socket, event, remaining)?;
             let effect = if config.mode == Mode::Block
                 && !matches!(reason, "skill_pass" | "skill_not_requested")
             {
@@ -239,7 +200,7 @@ fn dispatch(
                         code,
                         mapping.language,
                         &trace_context,
-                        backend_budget()?,
+                        remaining,
                     )?;
                     match (config.mode, verdict) {
                         (Mode::Block, scan::Verdict::Risk) => ("block", "code_risk"),

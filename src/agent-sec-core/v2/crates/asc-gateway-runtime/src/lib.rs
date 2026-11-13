@@ -16,7 +16,8 @@ pub use error::{GatewayError, GatewayErrorKind};
 pub use host::{GatewayAccount, Host, SystemHost};
 pub use processes::{MAX_PROCESS_TREE, ProcessIdentity};
 pub use service::{
-    CaBundle, GatewayConfig, GatewayService, GatewayStatus, KeyList, KeyOutcome, ScopeStatusView,
+    CredentialGrant, GatewayConfig, GatewayService, GatewayStatus, KeyList, KeyOutcome, KeyRequest,
+    ScopeStatusView,
 };
 
 #[cfg(test)]

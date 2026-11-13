@@ -1,2 +1,1 @@
-# The remaining regression tests use only the Python standard library.
-# PyMuPDF was required by the retired pdf-reader skill and has been removed.
+PyMuPDF==1.26.7

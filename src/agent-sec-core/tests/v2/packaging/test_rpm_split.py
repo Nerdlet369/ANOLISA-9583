@@ -106,11 +106,8 @@ class RpmSplitTests(unittest.TestCase):
             real - {"agent-sec-core"},
         )
         header = text.split("%description", 1)[0]
-        for package in ("agent-sec-plugins", "agent-sec-skills"):
-            self.assertIn(
-                f"Recommends:     {package} = %{{version}}-%{{release}}", header
-            )
-            self.assertNotIn(f"Requires:       {package}", header)
+        self.assertNotIn("Requires:       agent-sec-plugins", header)
+        self.assertNotIn("Requires:       agent-sec-skills", header)
         self.assertIn("Requires:       bubblewrap", header)
         self.assertIn("%define anolis_release 1", header)
         self.assertIn("Provides:       agent-sec-cli = %{version}-%{release}", header)
@@ -144,7 +141,7 @@ class RpmSplitTests(unittest.TestCase):
             "/usr/lib/systemd/system/agent-sec-gateway.service": "agent-sec-core",
             "/usr/lib/systemd/system/agent-sec-core.service.d/gateway.conf": "agent-sec-core",
             "/usr/share/anolisa/sec-core/gateway/asc_gateway_addon.py": "agent-sec-core",
-            "/usr/share/anolisa/sec-core/gateway/github.cedar": "agent-sec-core",
+            "/usr/share/anolisa/sec-core/gateway/github-policy.json": "agent-sec-core",
             "/usr/share/anolisa/sec-core/gateway/install-mitmproxy.sh": "agent-sec-core",
             "/usr/share/anolisa/extensions/agent-sec-core/hooks/code_scanner_hook.py": "agent-sec-plugins",
             "/opt/agent-sec/openclaw-plugin/dist/index.js": "agent-sec-plugins",
@@ -247,7 +244,7 @@ class RpmSplitTests(unittest.TestCase):
                 "gateway/asc_gateway_addon.py",
                 "gateway/asc_gateway_policy.py",
                 "gateway/mitmproxy.provenance",
-                "gateway/github.cedar",
+                "gateway/github-policy.json",
                 "gateway/install-mitmproxy.sh",
             )
             for name in artifacts:

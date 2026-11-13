@@ -260,8 +260,8 @@ result = await sdk.post_tool(
 
 `content_origin` 必须来自工具注册契约，不得从结果文本推断。Shell 工具应把实际执行的命令行
 （RTK 改写时为 PreTool 返回的那条）作为 `command` 传入：Core 会把只打印本地文件的结果报告为
-`file_read`，打印出的 HTML 页面以及打印出的 JSON 值中的 HTML 保持原样，输出中的数据仍照常
-压缩；其他工具不要设置 `command`。Core 统一路由 Retrieve 输出、
+`file_read`，打印出的 HTML 页面保持原样，输出中的数据仍照常压缩；其他工具不要设置
+`command`。Core 统一路由 Retrieve 输出、
 错误、中断或拒绝、RTK 已优化输出和普通成功输出，并返回最终内容、Disposition、操作轨迹、
 可恢复性、Token 数量、Stash Key 与可选诊断上下文。Adapter 应透传中间 Streaming Chunk，
 只对最终模型可见文本调用 PostTool。
@@ -306,12 +306,10 @@ config = TokenlessConfig(
 | `search_path_sharing_enabled` | `TOKENLESS_SEARCH_PATH_SHARING_ENABLED` | `True` |
 | `html_extraction_enabled` | `TOKENLESS_HTML_EXTRACTION_ENABLED` | `True` |
 | `diff_compression_enabled` | `TOKENLESS_DIFF_COMPRESSION_ENABLED` | `True` |
-| `mixed_content_enabled` | `TOKENLESS_MIXED_CONTENT_ENABLED` | `False` |
 
 显式构造参数优先于环境变量。未设置或空值采用默认值；`1`、`true`、`yes` 忽略大小写后
 启用，其他值关闭。`compression_enabled=False` 保留原始输出并记录符合条件的压缩候选
-（dry-run），不会关闭 RTK。`mixed_content_enabled` 启用可选的混合区域路由；设为 false
-时，该路由不生成候选，dry-run 模式下也一样。AgentScope 和 QwenPaw 继承相同默认值。
+（dry-run），不会关闭 RTK。AgentScope 和 QwenPaw 继承相同默认值。
 直接调用 `TokenlessRuntime` 时仍使用其显式构造配置。
 
 ### Runtime 直接调用示例

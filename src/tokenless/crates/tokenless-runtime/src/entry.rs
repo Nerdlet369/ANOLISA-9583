@@ -37,12 +37,8 @@ pub struct EntryOptions {
     pub search_path_sharing_enabled: bool,
     /// Whether command-output Git diffs may omit context with original recovery. Enabled by default.
     pub diff_compression_enabled: bool,
-    /// Whether complete HTML documents, and HTML inside JSON string values, are rendered as
-    /// Markdown with original recovery. Enabled by default.
+    /// Whether complete HTML documents are rendered as Markdown with original recovery. Enabled by default.
     pub html_extraction_enabled: bool,
-    /// Whether structured regions inside mixed tool outputs may be compressed
-    /// individually. Disabled by default.
-    pub mixed_content_enabled: bool,
     /// Whether lifecycle operations may use the attached stash.
     pub stash_enabled: bool,
     /// Tokenless executable whose `rtk` subcommand runs rewritten PreTool commands.
@@ -1079,7 +1075,6 @@ pub(crate) fn post_tool_with_store(
                 search_path_sharing_enabled: options.search_path_sharing_enabled,
                 diff_compression_enabled: options.diff_compression_enabled,
                 html_extraction_enabled: options.html_extraction_enabled,
-                mixed_content_enabled: options.mixed_content_enabled,
                 stash_enabled: options.stash_enabled,
                 require_reversibility: true,
                 force_json: false,
@@ -1395,7 +1390,6 @@ mod tests {
             search_path_sharing_enabled: true,
             diff_compression_enabled: false,
             html_extraction_enabled: false,
-            mixed_content_enabled: false,
             stash_enabled: true,
             rtk_launcher: None,
             rtk_data_dir: Some(PathBuf::from("/tmp/tokenless-test")),
@@ -3434,46 +3428,6 @@ mod tests {
         assert!(matches!(
             post_tool_with_store(&request, &opts, Some(&failing)),
             Err(RuntimeError::StashWrite { count }) if count == 1
-        ));
-    }
-
-    #[test]
-    fn pnpm_entry_preserves_host_guards_and_rtk_ownership() {
-        let input = include_str!(
-            "../../tokenless-compressors/tests/fixtures/build_logs/pnpm_install_live.txt"
-        );
-        for mode in 0..8 {
-            let mut request = post_tool_request(input);
-            match mode {
-                0 => request.status = ToolResultStatus::Error,
-                1 => request.status = ToolResultStatus::Denied,
-                2 => request.status = ToolResultStatus::Interrupted,
-                3 => request.result_kind = ResultKind::Retrieve,
-                4 => request.output_optimization = OutputOptimization::Rtk,
-                5 => request.content_origin = ContentOrigin::FileContent,
-                6 => request.tool_name = "Grep".into(),
-                7 => request.capabilities.replace_output = false,
-                _ => unreachable!(),
-            }
-            let result = post_tool_with_store(&request, &options(), None).unwrap();
-            assert_eq!(result.response.output, input, "mode {mode}");
-            assert!(result.response.applied_operations.is_empty());
-            assert!(result.response.stash_keys.is_empty());
-        }
-        assert!(!package_command_is_build_log_owned(&["install".into()]));
-    }
-
-    #[test]
-    fn pnpm_entry_reports_storage_failure_even_with_profitable_layout() {
-        let input = include_str!(
-            "../../tokenless-compressors/tests/fixtures/build_logs/pnpm_install_live.txt"
-        );
-        let mut request = post_tool_request(input);
-        request.capabilities.recovery = tokenless_protocol::RecoveryMethod::Shell;
-        let failing: Arc<dyn StashStore> = Arc::new(FailingStore);
-        assert!(matches!(
-            post_tool_with_store(&request, &options(), Some(&failing)),
-            Err(RuntimeError::StashWrite { count: 1 })
         ));
     }
 

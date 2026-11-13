@@ -32,7 +32,7 @@ pub(super) fn call(
     socket: &Path,
     text: &str,
     context: &Value,
-    budget: impl FnOnce() -> Result<Duration, &'static str>,
+    timeout: Duration,
 ) -> Result<Verdict, &'static str> {
     // The CLI's stdin path strips Python whitespace before scanning.
     let scanned =
@@ -40,7 +40,6 @@ pub(super) fn call(
     if scanned.is_empty() {
         return Ok(Verdict::Pass);
     }
-    let timeout = budget()?;
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or("invalid_budget")?;

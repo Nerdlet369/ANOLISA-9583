@@ -52,48 +52,6 @@ target/debug/aw status --config crates/aw-service/examples/aw.qoder.yaml
 target/debug/aw stop --config crates/aw-service/examples/aw.qoder.yaml
 ```
 
-## 准备原生命令启动
-
-在 Qoder 停止时安装一次启动 Hook，之后继续使用原来的 `qoder` 或 `qodercli`
-命令。配置的 `argv[0]` 须指向实际 `qodercli` 可执行文件；shell 分发器可以启动
-该文件，AW 不会推测任意包装脚本的目标。`HOME/.qoder` 与所选启动目录须为当前
-用户所有的规范绝对路径，权限为 `0700`。安装保留现有设置与用户 Hook。
-
-```bash
-mkdir -p "$HOME/.local/state/aw"
-target/debug/aw instance setup --config aw.yaml --agent qoder \
-  --directory "$HOME/.local/state/aw/qoder-startup"
-qoder
-# 也可使用原生 print 模式：
-qoder -p 'Review this harmless prompt.'
-```
-
-原生 `SessionStart` 回调直接完成实例准备与就绪确认，初始 `aw.yaml` 策略在
-首次提交前生效。每个进程分别绑定 PID、启动身份、会话与 Service 代次，多个
-Qoder 进程可以共用已准备的配置目录。选中实例空闲时，编辑允许更新的策略字段后执行：
-
-```bash
-target/debug/aw instance update --config aw.yaml --instance INSTANCE_ID
-```
-
-print 请求在启动时读取初始策略，运行中的请求不能切换策略。原有参数限制继续
-适用：自定义设置来源、关闭 Hook、worktree、恢复会话与远程入口需要各自受支持
-的接线。启动绑定缺失或过期时，输入和工具执行前回调会阻断操作。正常
-`SessionEnd` 释放运行资产；进程异常退出后，等待 Service 清理完成，再移除安装：
-
-```bash
-target/debug/aw instance setup --remove --config aw.yaml --agent qoder \
-  --directory "$HOME/.local/state/aw/qoder-startup"
-```
-
-移除会拒绝仍存活的 owner，只回收确认失效的进程记录及其资产，并按完整匹配移除
-安装的 Hook 组，保留用户修改。被修改过的 AW Hook 须先恢复再移除。Service Socket 缺失时，移除只确认 owner
-退出并清理其私有本地资产，不代表已验证 Service 排空。尚未发布完成的空记录或
-不完整记录可在 owner 退出后清理，损坏内容不会用来推测并删除其他文件。原生 print
-验收覆盖模型调用前的输入阻断；工具策略更新和多 owner 隔离另有确定性 Service
-测试。已有 TUI [附着入口](../deployment/independent-instances.md)继续支持其已验证
-的空闲进程范围。
-
 ## 检查用户提交
 
 普通 print 和终端启动可通过 Qoder 的 `UserPromptSubmit` 命令 Hook 接入
@@ -104,41 +62,9 @@ target/debug/aw instance setup --remove --config aw.yaml --agent qoder \
 
 原生 `session_id` 和 `request_set_id` 将同次提交的串行或并行 AW 步骤关联起来。
 身份缺失时按该步骤的失败策略处理。已有原生 Hook 继续启用，其后续追加的上下文
-不属于本次提交文本快照。reloadable 和 attach 的 TUI 路由也在模型请求前执行此事件。
-稳定回调使用当前策略，请求保持该版本直到收到原生空闲确认。
+不属于本次提交文本快照。reloadable 和 attach 路由尚未接入此事件。
 普通 CLI 绑定最多保留 1,024 次不同受检提交的防重放记录，达到该数量前重新开启
 CLI 会话。
-
-## 纳入原生终端会话
-
-Qoder CLI 1.1.73 使用独占的私有 HOME 配置启动终端后，可在第一次请求前附着。
-在 `aw.yaml` 的 `spec.agents.qoder.argv` 中配置匹配的可执行文件，
-从该配置所在目录执行：
-
-```bash
-aw instance attach --agent qoder --pid "$QODER_PID"
-aw instance update --agent qoder
-```
-
-先将 `QODER_PID` 设为自己启动的终端进程。附着会核验启动身份和原生配置采用结果，
-完成后实例才进入 Ready。修改 `aw.yaml` 中的策略字段，在两次请求之间执行更新。
-活动请求、工具调用和未确认的清理会拒绝更新。存在多个实例时，使用
-`--instance INSTANCE_ID` 明确选择一个。
-
-该路由支持 `input.submit`、`tool.before` 和 `tool.after`。print 模式、
-headless fast hooks 和其他 Qoder 进程共用的配置目录会被拒绝。
-自动化附着 fixture 覆盖增加及移除输入阻断、阻止模型派发。
-真实 1.1.73 TUI 已验证工具阻断、空闲更新后的工具放行，以及保留原进程和用户设置的
-移除与重新附着。
-
-终端空闲后移除附着：
-
-```bash
-aw instance attach --agent qoder --pid "$QODER_PID" --remove
-```
-
-AW 只恢复自己拥有的配置条目。版本校验与中断恢复见
-[策略更新](../deployment/policy-updates.md)。
 
 ## 保留已有 Hook 与调度
 

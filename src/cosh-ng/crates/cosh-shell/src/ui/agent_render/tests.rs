@@ -592,7 +592,6 @@ fn activity_panel_keeps_card_border_aligned_to_renderer_width() {
 #[test]
 fn activity_panel_write_preserves_ratatui_styles_for_terminal_output() {
     let renderer = RatatuiInlineRenderer {
-        column_limit: None,
         width: 100,
         plain: false,
         styled: true,
@@ -959,7 +958,6 @@ fn zh_cards_keep_40_and_80_column_widths() {
 #[test]
 fn recommendation_panel_write_preserves_ratatui_styles_for_terminal_output() {
     let renderer = RatatuiInlineRenderer {
-        column_limit: None,
         width: 100,
         plain: false,
         styled: true,
@@ -1110,7 +1108,6 @@ fn recommendation_action_panel_keeps_card_border_aligned_to_renderer_width() {
 #[test]
 fn recommendation_action_panel_write_preserves_ratatui_styles_for_terminal_output() {
     let renderer = RatatuiInlineRenderer {
-        column_limit: None,
         width: 100,
         plain: false,
         styled: true,
@@ -1302,21 +1299,21 @@ fn health_banner_snapshot_matrix_keeps_rich_output_compact() {
             .health_banner_lines(HealthBannerModel::new(&report))
             .join("\n");
 
-        assert!(text.lines().count() <= 18, "{text}");
+        assert!(text.lines().count() <= 14, "{text}");
         assert_rendered_width(&text, width as usize);
         assert_box_lines_aligned(&text, width as usize);
         assert!(text.contains("Health check"), "{text}");
         assert!(text.contains("critical"), "{text}");
         assert!(text.contains("Load"), "{text}");
-        assert!(text.contains("Memory") && text.contains("Disk"), "{text}");
+        assert!(text.contains("Resources"), "{text}");
         assert!(text.contains("1m 10.4 / 4 cores (2.6x)"), "{text}");
         assert!(!text.contains("Load  Load 1m"), "{text}");
-        assert!(text.contains("Memory  used"), "{text}");
+        assert!(text.contains("Mem used"), "{text}");
         assert!(!text.contains("Mem avail 8% ▕"), "{text}");
         assert!(!text.contains("Memory 8%"), "{text}");
         if width >= 80 {
-            assert!(text.contains("Disk  / used"), "{text}");
-            assert!(text.contains("Disk  /data used"), "{text}");
+            assert!(text.contains("Disk / used"), "{text}");
+            assert!(text.contains("Disk /data used"), "{text}");
         }
         let meter_widths = meter_cell_widths(&text);
         if width >= 120 {
@@ -1329,7 +1326,7 @@ fn health_banner_snapshot_matrix_keeps_rich_output_compact() {
             assert!(meter_widths.is_empty(), "{text}");
         }
         assert!(!text.contains("██████████"), "{text}");
-        assert!(text.contains("Needs attention"), "{text}");
+        assert!(text.contains("Findings"), "{text}");
         assert!(text.contains("Suggested Prompts"), "{text}");
         if width >= 80 {
             assert!(
@@ -1350,10 +1347,10 @@ fn health_banner_snapshot_matrix_keeps_rich_output_compact() {
             assert_eq!(prompt_count, 1, "{text}");
         }
         if width >= 80 {
-            assert!(text.contains("Check current disk usage"), "{text}");
+            assert!(text.contains("Inspect the risky mount"), "{text}");
         }
         if width >= 120 {
-            assert!(text.contains("Check memory pressure"), "{text}");
+            assert!(text.contains("Analyze memory pressure"), "{text}");
         } else {
             assert!(text.contains('›'), "{text}");
         }
@@ -1379,11 +1376,11 @@ fn health_banner_matches_standard_panel_width_and_padding() {
     assert_box_lines_aligned(&health, 160);
     assert_box_lines_aligned(&agent, 160);
     assert!(
-        health.lines().any(|line| line.starts_with("│ Memory")),
+        health.lines().any(|line| line.starts_with("│ Resources")),
         "{health}"
     );
     assert!(
-        !health.lines().any(|line| line.starts_with("│Memory")),
+        !health.lines().any(|line| line.starts_with("│Resources")),
         "{health}"
     );
 }
@@ -1399,16 +1396,16 @@ fn health_banner_uses_zh_catalog_without_translating_commands() {
             .health_banner_lines(HealthBannerModel::new(&report))
             .join("\n");
 
-        assert!(text.lines().count() <= 18, "{text}");
+        assert!(text.lines().count() <= 14, "{text}");
         assert_rendered_width(&text, width as usize);
         assert_box_lines_aligned(&text, width as usize);
         assert!(text.contains("健康检查"), "{text}");
         assert!(text.contains("严重"), "{text}");
         assert!(text.contains("负载"), "{text}");
-        assert!(text.contains("内存") && text.contains("磁盘"), "{text}");
+        assert!(text.contains("资源"), "{text}");
         assert!(text.contains("1分钟 10.4 / 4核（2.6倍）"), "{text}");
         assert!(!text.contains("负载  1分钟负载"), "{text}");
-        assert!(text.contains("内存  已用"), "{text}");
+        assert!(text.contains("内存已用"), "{text}");
         if width >= 80 {
             assert!(text.contains("磁盘 /data 已用"), "{text}");
         }
@@ -1423,7 +1420,7 @@ fn health_banner_uses_zh_catalog_without_translating_commands() {
             assert!(meter_widths.is_empty(), "{text}");
         }
         assert!(!text.contains("██████████"), "{text}");
-        assert!(text.contains("重点关注"), "{text}");
+        assert!(text.contains("发现的问题"), "{text}");
         assert!(text.contains("建议下一步"), "{text}");
         if width >= 80 {
             assert!(text.contains("以下提示词可直接输入给 Agent："), "{text}");
@@ -1443,10 +1440,10 @@ fn health_banner_uses_zh_catalog_without_translating_commands() {
             assert_eq!(prompt_count, 1, "{text}");
         }
         if width >= 80 {
-            assert!(text.contains("请核实当前磁盘占用"), "{text}");
+            assert!(text.contains("检查高风险挂载点"), "{text}");
         }
         if width >= 120 {
-            assert!(text.contains("请核实当前内存压力"), "{text}");
+            assert!(text.contains("分析内存压力"), "{text}");
         } else {
             assert!(text.contains('›'), "{text}");
         }
@@ -1472,7 +1469,7 @@ fn health_banner_long_mount_ellipsis_and_gauge_semantics() {
     assert_rendered_width(&text, 120);
     assert!(text.contains("..."), "{text}");
     assert!(!text.contains(long_mount), "{text}");
-    assert!(text.contains("Memory  used 92% ▕████████▏"), "{text}");
+    assert!(text.contains("Mem used 92% ▕████████▏"), "{text}");
     assert!(!text.contains("Mem avail 8% ▕"), "{text}");
     assert!(!text.contains("CPU load 2.6x/core ["), "{text}");
 }
@@ -1490,9 +1487,9 @@ fn health_banner_hides_riskiest_disk_metric_without_disk_finding() {
         .health_banner_lines(HealthBannerModel::new(&report))
         .join("\n");
 
-    assert!(text.contains("Disk  / used 41%"), "{text}");
-    assert!(!text.contains("Disk  /data used"), "{text}");
-    assert!(!text.contains("Check current disk usage"), "{text}");
+    assert!(text.contains("Disk / used 41%"), "{text}");
+    assert!(!text.contains("Disk /data used"), "{text}");
+    assert!(!text.contains("Inspect the risky mount"), "{text}");
 }
 
 #[test]
@@ -1505,14 +1502,14 @@ fn health_banner_wraps_prompt_suggestions_without_ellipsis_truncation() {
     let compact = compact_without_box_chars(&text);
 
     assert_rendered_width(&text, 40);
-    assert!(text.lines().count() <= 18, "{text}");
+    assert!(text.lines().count() <= 14, "{text}");
     assert!(text.contains("Suggested Prompts"), "{text}");
     assert!(
-        compact.contains("Check current disk usage and major"),
+        compact.contains("Inspect the risky mount and suggest"),
         "{text}"
     );
-    if text.lines().count() < 18 {
-        assert!(compact.contains("consumers; suggest next steps."), "{text}");
+    if text.lines().count() < 14 {
+        assert!(compact.contains("safe disk cleanup targets."), "{text}");
     }
     assert!(!text.contains("..."), "{text}");
 }
@@ -1527,12 +1524,9 @@ fn health_banner_oom_prompt_wraps_fully_at_narrow_width() {
     let compact = compact_without_box_chars(&text);
 
     assert_rendered_width(&text, 40);
-    assert!(text.lines().count() <= 18, "{text}");
+    assert!(text.lines().count() <= 14, "{text}");
     assert!(text.contains("Suggested Prompts"), "{text}");
-    assert!(
-        compact.contains("Check recent OOM timing, scope, affected processes and memory limits."),
-        "{text}"
-    );
+    assert!(compact.contains("memory state around the event."), "{text}");
     assert!(!text.contains("..."), "{text}");
 }
 
@@ -1541,14 +1535,8 @@ fn health_banner_shows_cpu_used_only_when_utilization_fact_exists() {
     let without_cpu_used = RatatuiInlineRenderer::with_width(120)
         .health_banner_lines(HealthBannerModel::new(&warning_health_report()))
         .join("\n");
-    assert!(
-        !without_cpu_used.contains("CPU  used"),
-        "{without_cpu_used}"
-    );
-    assert!(
-        !without_cpu_used.contains("CPU  已用"),
-        "{without_cpu_used}"
-    );
+    assert!(!without_cpu_used.contains("CPU used"), "{without_cpu_used}");
+    assert!(!without_cpu_used.contains("CPU 已用"), "{without_cpu_used}");
 
     let mut report = warning_health_report();
     report
@@ -1558,7 +1546,7 @@ fn health_banner_shows_cpu_used_only_when_utilization_fact_exists() {
     let text = RatatuiInlineRenderer::with_width(120)
         .health_banner_lines(HealthBannerModel::new(&report))
         .join("\n");
-    assert!(text.contains("CPU  used 37% ▕███░░░░░▏"), "{text}");
+    assert!(text.contains("CPU used 37% ▕███░░░░░▏"), "{text}");
     assert!(text.contains("1m 10.4 / 4 cores (2.6x)"), "{text}");
     assert!(!text.contains("Load  Load 1m"), "{text}");
 
@@ -1566,7 +1554,7 @@ fn health_banner_shows_cpu_used_only_when_utilization_fact_exists() {
         .with_language(crate::Language::ZhCn)
         .health_banner_lines(HealthBannerModel::new(&report))
         .join("\n");
-    assert!(zh_text.contains("CPU  已用 37% ▕███░░░░░▏"), "{zh_text}");
+    assert!(zh_text.contains("CPU 已用 37% ▕███░░░░░▏"), "{zh_text}");
     assert!(zh_text.contains("1分钟 10.4 / 4核（2.6倍）"), "{zh_text}");
     assert!(!zh_text.contains("负载  1分钟负载"), "{zh_text}");
 }
@@ -1581,7 +1569,7 @@ fn health_banner_recent_oom_uses_compact_evidence_without_raw_fact_dump() {
         .join("\n");
 
     assert_rendered_width(&text, 120);
-    assert!(text.contains("近期 OOM"), "{text}");
+    assert!(text.contains("最近一次 OOM"), "{text}");
     assert!(text.contains("OOM"), "{text}");
     assert!(text.contains("python3"), "{text}");
     assert!(
@@ -1592,7 +1580,7 @@ fn health_banner_recent_oom_uses_compact_evidence_without_raw_fact_dump() {
     assert!(!text.contains("CONSTRAINT_MEMCG"), "{text}");
     assert!(!text.contains("CONSTRAINT_"), "{text}");
     assert!(text.contains("建议下一步"), "{text}");
-    assert!(text.contains("请核对近期 OOM 的发生时间"), "{text}");
+    assert!(text.contains("帮我分析最近一次 OOM 的原因"), "{text}");
     assert!(!text.contains("解释当前资源压力"), "{text}");
     assert!(!text.contains("OOM age"), "{text}");
     assert!(!text.contains("process "), "{text}");
@@ -1629,7 +1617,6 @@ fn health_banner_recent_oom_scope_label_id_wins_over_raw_constraint() {
 fn health_banner_styled_output_keeps_finding_body_primary() {
     let report = oom_health_report();
     let renderer = RatatuiInlineRenderer {
-        column_limit: None,
         width: 120,
         plain: false,
         styled: true,
@@ -1643,7 +1630,7 @@ fn health_banner_styled_output_keeps_finding_body_primary() {
 
     let text = String::from_utf8(output).expect("utf8 health banner");
     let clean = strip_ansi_escape(&text);
-    let body = "Recent OOM event";
+    let body = "the latest OOM has already happened";
     assert!(clean.contains(body), "{clean}");
     assert!(
         text.contains(";31m") || text.contains("[31m"),
@@ -1660,7 +1647,6 @@ fn health_banner_styled_output_keeps_finding_body_primary() {
 fn health_banner_styled_labels_are_readable_not_dim_only() {
     let report = oom_health_report();
     let renderer = RatatuiInlineRenderer {
-        column_limit: None,
         width: 120,
         plain: false,
         styled: true,
@@ -1675,7 +1661,7 @@ fn health_banner_styled_labels_are_readable_not_dim_only() {
     let text = String::from_utf8(output).expect("utf8 health banner");
     let clean = strip_ansi_escape(&text);
     assert!(clean.contains("Load"), "{clean}");
-    assert!(clean.contains("Needs attention"), "{clean}");
+    assert!(clean.contains("Findings"), "{clean}");
     assert!(clean.contains("Suggested Prompts"), "{clean}");
     assert!(
         clean.contains("You can type these prompts to the agent:"),
@@ -1684,7 +1670,7 @@ fn health_banner_styled_labels_are_readable_not_dim_only() {
 
     for label in [
         "Load",
-        "Needs attention",
+        "Findings",
         "Suggested Prompts",
         "You can type these prompts to the agent:",
     ] {
@@ -1697,7 +1683,7 @@ fn health_banner_styled_labels_are_readable_not_dim_only() {
 }
 
 #[test]
-fn health_banner_oom_prompts_verify_event_evidence_in_both_languages() {
+fn health_banner_oom_prompts_are_cause_oriented_in_both_languages() {
     let mut report = oom_health_report();
     report.try_items = vec![health_try_for(
         "T07",
@@ -1715,10 +1701,10 @@ fn health_banner_oom_prompts_verify_event_evidence_in_both_languages() {
         .health_banner_lines(HealthBannerModel::new(&report))
         .join("\n");
     assert!(
-        zh_text.contains("请核对近期 OOM 中 python3 的受影响情况"),
+        zh_text.contains("帮我分析最近一次 OOM 为什么杀掉 python3"),
         "{zh_text}"
     );
-    assert!(zh_text.contains("相关内存限制"), "{zh_text}");
+    assert!(zh_text.contains("cgroup 和内存上限"), "{zh_text}");
     assert!(!zh_text.contains("检查 python3 的内存占用"), "{zh_text}");
     assert!(!zh_text.contains("是否导致了最新 OOM"), "{zh_text}");
 
@@ -1728,11 +1714,11 @@ fn health_banner_oom_prompts_verify_event_evidence_in_both_languages() {
         .join("\n");
     let en_compact = compact_words(&en_text);
     assert!(
-        en_compact.contains("Check recent OOM impact on python3"),
+        en_compact.contains("Help me analyze why the latest OOM killed python3"),
         "{en_text}"
     );
     assert!(
-        en_compact.contains("event timing and memory limits"),
+        en_compact.contains("cgroup scope and memory limits"),
         "{en_text}"
     );
     assert!(
@@ -1753,8 +1739,8 @@ fn health_banner_plain_fallback_keeps_content_without_box_art() {
 
     assert!(text.contains("Health check:"), "{text}");
     assert!(text.contains("critical"), "{text}");
-    assert!(text.contains("Memory  used"), "{text}");
-    assert!(text.contains("Needs attention"), "{text}");
+    assert!(text.contains("Mem used"), "{text}");
+    assert!(text.contains("Findings"), "{text}");
     assert!(text.contains("Suggested Prompts"), "{text}");
     assert!(
         text.contains("You can type these prompts to the agent:"),
@@ -1866,7 +1852,7 @@ fn health_banner_filters_prompts_for_hidden_findings() {
         .health_banner_lines(HealthBannerModel::new(&report))
         .join("\n");
 
-    assert!(text.contains("Needs attention"), "{text}");
+    assert!(text.contains("Findings"), "{text}");
     assert_eq!(text.matches('›').count(), 3, "{text}");
     assert!(!text.contains("configured service"), "{text}");
     assert!(
@@ -1914,9 +1900,6 @@ fn health_banner_service_only_prompt_aligns_with_service_finding() {
         100,
         "J15:redis.service",
     )];
-    report.try_items[0]
-        .prompt_args
-        .insert("service".to_string(), "redis.service".to_string());
     report.recompute_overall_severity();
 
     let text = RatatuiInlineRenderer::with_width(120)
@@ -1926,7 +1909,7 @@ fn health_banner_service_only_prompt_aligns_with_service_finding() {
     assert!(text.contains("service unit redis.service"), "{text}");
     assert!(text.contains("observed failed, expected active"), "{text}");
     assert!(
-        text.contains("Verify the current state of service redis.service"),
+        text.contains("Inspect the configured service state"),
         "{text}"
     );
     assert!(!text.contains("OOM"), "{text}");
@@ -1937,10 +1920,7 @@ fn health_banner_service_only_prompt_aligns_with_service_finding() {
         .join("\n");
     assert!(zh_text.contains("服务单元 redis.service"), "{zh_text}");
     assert!(zh_text.contains("当前 failed，预期 active"), "{zh_text}");
-    assert!(
-        zh_text.contains("请先核实服务 redis.service 的当前状态"),
-        "{zh_text}"
-    );
+    assert!(zh_text.contains("检查配置服务状态"), "{zh_text}");
 }
 
 #[test]
@@ -2131,8 +2111,7 @@ fn markdown_stream_keeps_ambiguous_and_combining_widths_aligned() {
 
     assert!(text.contains("status · waiting"), "{text}");
     assert!(text.contains("warning"), "{text}");
-    assert!(text.starts_with("\n"), "{text}");
-    assert_box_lines_aligned(text.trim_start_matches('\n'), 54);
+    assert_box_lines_aligned(&text, 54);
 }
 
 fn assert_rendered_width(output: &str, max_width: usize) {
@@ -2433,47 +2412,5 @@ fn test_prompt_id(label_id: HealthMessageId) -> Option<HealthMessageId> {
             Some(HealthMessageId::HealthPromptReviewUnavailableChecks)
         }
         _ => None,
-    }
-}
-
-#[test]
-fn health_card_has_named_resource_rows_and_bulleted_findings() {
-    for language in [crate::Language::ZhCn, crate::Language::EnUs] {
-        let text = RatatuiInlineRenderer::with_width(120)
-            .with_language(language)
-            .health_banner_lines(HealthBannerModel::new(&warning_health_report()))
-            .join("\n");
-        let heading = if language == crate::Language::ZhCn {
-            "重点关注"
-        } else {
-            "Needs attention"
-        };
-        let metrics = text.split(heading).next().unwrap();
-        assert!(
-            !metrics.contains(if language == crate::Language::ZhCn {
-                "资源"
-            } else {
-                "Resources"
-            }),
-            "{text}"
-        );
-        for label in if language == crate::Language::ZhCn {
-            ["内存", "磁盘", "Swap"]
-        } else {
-            ["Memory", "Disk", "Swap"]
-        } {
-            let row = metrics
-                .lines()
-                .find(|line| line.trim_start_matches('│').trim_start().starts_with(label))
-                .unwrap_or_else(|| panic!("missing {label}: {text}"));
-            if label != "Swap" {
-                assert!(!row.contains("Swap"), "{text}");
-            }
-        }
-        assert!(
-            text.lines().filter(|line| line.contains("• ")).count() >= 2,
-            "{text}"
-        );
-        assert!(text.contains(&format!("{heading} ──")), "{text}");
     }
 }

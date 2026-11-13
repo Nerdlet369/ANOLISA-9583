@@ -18,7 +18,6 @@ use tokenless_protocol::{
 
 use super::arbitration::{ArbitrationInput, Verdict, decide};
 use super::content::detect;
-use super::mixed;
 use super::stash_ledger::StashLedger;
 
 /// Policy resolved by Runtime for one PostTool call.
@@ -36,7 +35,6 @@ pub(crate) struct PostToolPipelineConfig {
     pub(crate) force_json: bool,
     pub(crate) allow_toon: bool,
     pub(crate) min_toon_chars: usize,
-    pub(crate) mixed_content_enabled: bool,
     pub(crate) json: JsonCompressionConfig,
 }
 
@@ -127,30 +125,12 @@ impl PostToolPipeline {
                         || (request.content_origin == ContentOrigin::CommandOutput
                             && SearchResultsCompressor.is_path_list(&request.content)))))
             && request.capabilities.replace_with_text;
-        // Mixed-content routing fires only when no whole-content domain
-        // matched: standalone documents keep their existing routes and
-        // eligibility checks untouched. Per-region compression reuses the
-        // same compressors, arbitration and stash lifecycle as those routes.
-        // Tabular regions are recognized only inside explicit fences (a bare
-        // CSV block has no verifiable boundary); bare regions are JSON only.
-        // Search output stays out even when the search route itself is
-        // switched off: path-sharing off means do-not-touch, not free rein.
-        let mixed_candidate = config.mixed_content_enabled
-            && !protect_search_output
-            && !diff_candidate
-            && !html_candidate
-            && !json_candidate
-            && !build_log_candidate
-            && !tabular_candidate
-            && !search_candidate
-            && request.capabilities.replace_with_text;
         if !diff_candidate
             && !html_candidate
             && !json_candidate
             && !build_log_candidate
             && !tabular_candidate
             && !search_candidate
-            && (!mixed_candidate || !mixed::has_recognizable_regions(&request.content))
         {
             return passthrough(request, before_tokens, content_type);
         }
@@ -263,12 +243,6 @@ impl PostToolPipeline {
                 allow_toon: config.allow_toon && request.capabilities.replace_with_text,
                 min_toon_chars: config.min_toon_chars,
                 allow_unrecoverable: !config.require_reversibility || !config.compression_enabled,
-                // Rewriting a field keeps the document JSON, so text
-                // replacement is not required. Data printed from a local
-                // file may be edited, so its HTML stays verbatim exactly like
-                // a printed page; Read results never reach this point.
-                embedded_html: config.html_extraction_enabled
-                    && request.content_origin != ContentOrigin::FileRead,
             };
             let outcome = match JsonCompressor::new(config.json.clone())
                 .compress(&request.content, &context)
@@ -323,7 +297,7 @@ impl PostToolPipeline {
                 stash_errors: 0,
                 unrecoverable_truncations: None,
             }
-        } else if tabular_candidate {
+        } else {
             let outcome = TabularCompressor.compress(&request.content);
             DomainCandidate {
                 output: outcome.output,
@@ -339,33 +313,6 @@ impl PostToolPipeline {
                 stash_writes: outcome.stash_writes,
                 stash_errors: outcome.metrics.stash_errors,
                 unrecoverable_truncations: None,
-            }
-        } else {
-            // Mixed-content regions. Region recognition ran inside
-            // `mixed::compress_regions`; every rejected or unsupported region
-            // stays byte-for-byte in the candidate. `None` from
-            // `compress_regions` means no region changed, no tentative
-            // Stash write was produced, and no Stash error occurred. An
-            // unchanged result carrying writes or any storage failure
-            // reaches the arbiter without operations, so the ledger rolls
-            // back all writes before the runtime reports the error count.
-            match mixed::compress_regions(
-                &request.content,
-                config,
-                attached_store,
-                &request.capabilities.recovery,
-                config.allow_toon && request.capabilities.replace_with_text,
-                config.html_extraction_enabled && request.content_origin != ContentOrigin::FileRead,
-            ) {
-                Some(outcome) => DomainCandidate {
-                    output: outcome.output,
-                    operations: outcome.operations,
-                    recoverability: outcome.recoverability,
-                    stash_writes: outcome.stash_writes,
-                    stash_errors: outcome.stash_errors,
-                    unrecoverable_truncations: outcome.unrecoverable_truncations,
-                },
-                None => return passthrough(request, before_tokens, content_type),
             }
         };
 
@@ -497,17 +444,13 @@ fn passthrough(
     }
 }
 
-/// Maps JSON-domain operations to their wire operation names.
-pub(super) fn json_operations(operations: &[JsonOperation]) -> Vec<AppliedOperation> {
+fn json_operations(operations: &[JsonOperation]) -> Vec<AppliedOperation> {
     operations
         .iter()
         .map(|operation| match operation {
             JsonOperation::Cleanup => AppliedOperation::JsonCleanup,
             JsonOperation::RecordReduction => AppliedOperation::JsonRecordReduction,
             JsonOperation::Truncation => AppliedOperation::JsonTruncation,
-            // The response reports the JSON content type, which distinguishes
-            // an embedded fragment from a rendered page.
-            JsonOperation::EmbeddedHtml => AppliedOperation::HtmlExtraction,
             JsonOperation::Toon => AppliedOperation::Toon,
         })
         .collect()
@@ -518,7 +461,7 @@ fn build_log_operations(operations: &[BuildLogOperation]) -> Vec<AppliedOperatio
         .iter()
         .map(|operation| match operation {
             BuildLogOperation::TerminalCleanup => AppliedOperation::TerminalCleanup,
-            BuildLogOperation::Reduction => AppliedOperation::BuildLogReduction,
+            BuildLogOperation::ProgressReduction => AppliedOperation::BuildLogReduction,
         })
         .collect()
 }
@@ -546,9 +489,6 @@ mod tests {
     include!("tests/tabular_pipeline_tests.rs");
     include!("tests/html_pipeline_tests.rs");
     include!("tests/path_list_pipeline_tests.rs");
-    include!("tests/embedded_html_pipeline_tests.rs");
-    use super::super::content::MAX_SCAN_BYTES;
-    include!("tests/mixed_pipeline_tests.rs");
     fn search_input() -> String {
         (1..30)
             .map(|line| format!("crates/long_directory/src/search_file.rs:{line}:  value  \r\n"))
@@ -913,7 +853,6 @@ mod tests {
             force_json: true,
             allow_toon: false,
             min_toon_chars: usize::MAX,
-            mixed_content_enabled: false,
             json: JsonCompressionConfig {
                 truncate_arrays_at,
                 array_tail_preserve: 0,
@@ -1167,13 +1106,6 @@ mod tests {
         config
     }
 
-    fn mixed_config() -> PostToolPipelineConfig {
-        let mut config = build_log_config();
-        config.force_json = false;
-        config.mixed_content_enabled = true;
-        config
-    }
-
     fn diff_input(context_width: usize) -> String {
         format!(
             "diff --git a/f b/f\nindex 123..456 100644\n--- a/f\n+++ b/f\n@@ -1,12 +1,12 @@\n{}-old\n+new\n tail\n",
@@ -1313,135 +1245,6 @@ mod tests {
         assert!(run.response.stash_keys.is_empty());
         assert_eq!(run.stash_errors, Some(1));
         assert_eq!(run.stash_writes, Some(0));
-    }
-
-    const PNPM_INSTALL: &str = include_str!(
-        "../../../tokenless-compressors/tests/fixtures/build_logs/pnpm_install_live.txt"
-    );
-
-    #[test]
-    fn pnpm_layout_is_lossless_without_recovery_or_storage() {
-        for mode in 0..3 {
-            let concrete = Arc::new(CountingStore::default());
-            let store: Arc<dyn StashStore> = concrete.clone();
-            let mut req = request(PNPM_INSTALL);
-            let mut config = build_log_config();
-            if mode == 0 {
-                req.capabilities.recovery = tokenless_protocol::RecoveryMethod::None;
-            } else if mode == 1 {
-                config.stash_enabled = false;
-            }
-            let run =
-                PostToolPipeline::run(&req, &config, if mode == 2 { None } else { Some(&store) });
-            assert_eq!(run.response.disposition, Disposition::Applied);
-            assert_eq!(run.response.content_type, Some(ContentType::BuildLog));
-            assert_eq!(run.response.recoverability, Recoverability::Lossless);
-            assert_eq!(
-                run.response.applied_operations,
-                [AppliedOperation::BuildLogReduction]
-            );
-            assert_eq!(run.response.before_tokens, 332);
-            assert_eq!(run.response.after_tokens, 256);
-            assert_eq!(run.response.output.matches("Progress:").count(), 13);
-            assert!(run.response.stash_keys.is_empty());
-            assert_eq!(concrete.stash_calls.load(Ordering::Relaxed), 0);
-        }
-    }
-
-    #[test]
-    fn pnpm_combines_layout_and_progress_in_one_committed_candidate() {
-        for origin in [ContentOrigin::CommandOutput, ContentOrigin::FileRead] {
-            let concrete = Arc::new(CountingStore::default());
-            let store: Arc<dyn StashStore> = concrete.clone();
-            let mut req = request(PNPM_INSTALL);
-            req.content_origin = origin;
-            let run = PostToolPipeline::run(&req, &build_log_config(), Some(&store));
-            assert_eq!(run.response.disposition, Disposition::Applied);
-            assert_eq!(run.response.recoverability, Recoverability::Retrievable);
-            assert_eq!(
-                run.response.applied_operations,
-                [AppliedOperation::BuildLogReduction]
-            );
-            assert_eq!(run.response.after_tokens, 184);
-            assert_eq!(run.response.stash_keys.len(), 1);
-            let payload = concrete
-                .retrieve(&run.response.stash_keys[0])
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                payload,
-                PNPM_INSTALL
-                    .lines()
-                    .skip(12)
-                    .take(7)
-                    .map(|line| format!("{line}\n"))
-                    .collect::<String>()
-            );
-            assert_eq!(concrete.stash_calls.load(Ordering::Relaxed), 1);
-            assert_eq!(concrete.delete_calls.load(Ordering::Relaxed), 0);
-            assert_eq!(concrete.len(), 1);
-        }
-    }
-
-    #[test]
-    fn pnpm_dry_run_and_timeout_do_not_leave_persistent_omissions() {
-        for dry_run in [true, false] {
-            let concrete = Arc::new(CountingStore::default());
-            let store: Arc<dyn StashStore> = concrete.clone();
-            let mut config = build_log_config();
-            if dry_run {
-                config.compression_enabled = false;
-            } else {
-                config.timeout = Duration::ZERO;
-            }
-            let run = PostToolPipeline::run(&request(PNPM_INSTALL), &config, Some(&store));
-            assert_eq!(run.response.output, PNPM_INSTALL);
-            assert_eq!(
-                run.response.disposition,
-                if dry_run {
-                    Disposition::DryRun
-                } else {
-                    Disposition::Timeout
-                }
-            );
-            assert!(run.response.applied_operations.is_empty());
-            assert!(run.response.stash_keys.is_empty());
-            assert_eq!(concrete.len(), 0);
-            assert_eq!(
-                concrete.stash_calls.load(Ordering::Relaxed),
-                usize::from(!dry_run)
-            );
-            assert_eq!(
-                concrete.delete_calls.load(Ordering::Relaxed),
-                usize::from(!dry_run)
-            );
-            if dry_run {
-                assert_eq!(run.response.after_tokens, 184);
-            }
-        }
-    }
-
-    #[test]
-    fn pnpm_partial_stash_failure_retains_layout_and_rolls_back_progress() {
-        let concrete = Arc::new(CountingStore {
-            fail_stashes_after: 1,
-            ..CountingStore::default()
-        });
-        let store: Arc<dyn StashStore> = concrete.clone();
-        let input = PNPM_INSTALL.repeat(2);
-        let run = PostToolPipeline::run(&request(&input), &build_log_config(), Some(&store));
-        assert_eq!(run.response.disposition, Disposition::Applied);
-        assert_eq!(run.response.recoverability, Recoverability::Lossless);
-        assert_eq!(
-            run.response.applied_operations,
-            [AppliedOperation::BuildLogReduction]
-        );
-        assert_eq!(run.response.output.matches("Progress:").count(), 26);
-        assert!(run.response.stash_keys.is_empty());
-        assert_eq!(run.stash_errors, Some(1));
-        assert_eq!(concrete.stash_calls.load(Ordering::Relaxed), 2);
-        assert_eq!(concrete.delete_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(concrete.len(), 0);
     }
 
     #[test]

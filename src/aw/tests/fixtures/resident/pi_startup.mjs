@@ -14,7 +14,7 @@ export async function run({ createSession, recover, root, config }) {
   const cwd = join(root, "expired");
   mkdirSync(cwd);
   Scope.prototype.command = async function (action, ...args) {
-    if (action === "activate") {
+    if (action === "acknowledge") {
       expired = this;
       const deadline = Date.now() + 7000;
       while (true) {

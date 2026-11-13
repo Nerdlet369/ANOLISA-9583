@@ -116,14 +116,11 @@ resolve_verifier_paths() {
 # Function to compute SHA256 hash of a file
 compute_file_hash() {
     local file_path="$1"
-    local hash_output
-    # Check the hash command itself, not the status of a trailing pipeline.
     if command -v sha256sum &> /dev/null; then
-        hash_output=$(sha256sum "$file_path") || return 1
+        sha256sum "$file_path" | awk '{print $1}'
     else
-        hash_output=$(shasum -a 256 "$file_path") || return 1
+        shasum -a 256 "$file_path" | awk '{print $1}'
     fi
-    printf '%s\n' "$hash_output" | awk '{print $1}'
 }
 
 # Function to generate manifest JSON
@@ -154,12 +151,7 @@ generate_manifest() {
             continue
         fi
 
-        local file_hash
-        # Both CLI modes call us in a conditional, where errexit is disabled.
-        if ! file_hash=$(compute_file_hash "$file"); then
-            echo "ERROR: Failed to hash file: $file" >&2
-            return 1
-        fi
+        local file_hash=$(compute_file_hash "$file")
 
         # Add comma if not first element
         if [[ "$first" == true ]]; then
@@ -376,15 +368,10 @@ sign_single_skill() {
     echo "Skill directory: $skill_dir"
 
     # Ensure .skill-meta directory exists
-    mkdir -p "$signing_dir" || return 1
+    mkdir -p "$signing_dir"
 
-    # Preserve any existing manifest/signature pair if generation fails.
-    local manifest_json
-    if ! manifest_json=$(generate_manifest "$skill_dir" "$skill_name"); then
-        echo "ERROR: Failed to generate manifest for: $skill_name" >&2
-        return 1
-    fi
-    printf '%s\n' "$manifest_json" > "$manifest_path" || return 1
+    # Generate and save manifest
+    generate_manifest "$skill_dir" "$skill_name" > "$manifest_path"
     echo -e "  ${GREEN}[CREATED]${NC} $SIGNING_DIR/$MANIFEST_FILENAME"
 
     # Sign manifest

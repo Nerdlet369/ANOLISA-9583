@@ -200,10 +200,6 @@ class TokenlessConfig:
     compression_enabled: bool = field(
         default_factory=lambda: _env_flag("TOKENLESS_COMPRESSION_ENABLED", True)
     )
-    # Append options so existing positional arguments retain their meaning.
-    mixed_content_enabled: bool = field(
-        default_factory=lambda: _env_flag("TOKENLESS_MIXED_CONTENT_ENABLED", False)
-    )
 
     def __post_init__(self) -> None:
         try:
@@ -365,7 +361,6 @@ class TokenlessSdk:
             compression_enabled=self.config.compression_enabled,
             search_path_sharing_enabled=self.config.search_path_sharing_enabled,
             diff_compression_enabled=self.config.diff_compression_enabled,
-            mixed_content_enabled=self.config.mixed_content_enabled,
             html_extraction_enabled=self.config.html_extraction_enabled,
         )
         self._rtk_launcher = self._resolve_launcher() if self.config.rtk_enabled else None

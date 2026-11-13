@@ -1,26 +1,18 @@
 use std::sync::{mpsc, Mutex};
 
-use crate::adapter::{AdapterInstance, CoshCoreAdapter, StartupAuthHint};
+use crate::adapter::{AdapterInstance, CoshCoreAdapter};
 use crate::shell_host::ShellHostConfig;
 
-type ProbeSender = mpsc::SyncSender<Option<(bool, StartupAuthHint)>>;
-type ProbeReceiver = mpsc::Receiver<Option<(bool, StartupAuthHint)>>;
+type ProbeSender = mpsc::SyncSender<Option<bool>>;
+type ProbeReceiver = mpsc::Receiver<Option<bool>>;
 
-pub(super) fn probe_core(
-    adapter: &AdapterInstance,
-    ai_enabled: bool,
-    compact_startup: bool,
-) -> Option<CoshCoreAdapter> {
-    crate::runtime::startup::session::StartupAuthState::should_probe(
-        ai_enabled,
-        compact_startup,
-        crate::runtime::startup::startup_banner_enabled(),
-    )
-    .then(|| match adapter {
-        AdapterInstance::CoshCore(core) => Some(core.clone()),
-        _ => None,
-    })
-    .flatten()
+pub(super) fn probe_core(adapter: &AdapterInstance, ai_enabled: bool) -> Option<CoshCoreAdapter> {
+    (ai_enabled && crate::runtime::startup::startup_banner_enabled())
+        .then(|| match adapter {
+            AdapterInstance::CoshCore(core) => Some(core.clone()),
+            _ => None,
+        })
+        .flatten()
 }
 
 struct DeferredProbe {
@@ -78,7 +70,7 @@ pub(super) fn arm(
 }
 
 fn channel() -> (ProbeSender, ProbeReceiver) {
-    mpsc::sync_channel(2)
+    mpsc::sync_channel(1)
 }
 
 fn start(core: CoshCoreAdapter) -> ProbeReceiver {
@@ -91,12 +83,6 @@ fn launch(core: CoshCoreAdapter, sender: ProbeSender) {
     let _ = std::thread::Builder::new()
         .name("cosh-startup-auth-probe".to_string())
         .spawn(move || {
-            let initial = core.startup_auth_state().ok();
-            if sender.send(initial).is_err() {
-                return;
-            }
-            if initial == Some((false, StartupAuthHint::Unknown)) {
-                let _ = sender.send(Some((false, core.startup_ecs_hint())));
-            }
+            let _ = sender.send(core.ai_configured().ok());
         });
 }

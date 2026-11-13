@@ -71,7 +71,7 @@ aw status --config /absolute/aw.yaml
 aw stop --config /absolute/aw.yaml
 ```
 
-`startDaemon()` 确认 daemon 就绪；`createQuery()` 在 SDK 握手后确认 Query 就绪。按[原生验收](../validation.md)检查允许、阻断、后置故障和清理。
+`startDaemon()` 确认预热就绪；`createQuery()` 在 SDK 握手后确认 Query 就绪。按[原生验收](../validation.md)检查允许、阻断、后置故障和清理。
 安全组合使用[SDK 示例](../../../../../src/aw/crates/aw-service/examples/aw.sdk-security.yaml)，先替换路径并启动 sec-core。
 
 共用的 sec-core Provider 还提供[加载前 Skill 校验](../providers/sec-core.md#加载前校验-skill)。在 `tool.before` 为原生 `Skill` 工具配置 `check_skill`，并在 daemon 授权实际规范化来源目录。
@@ -88,43 +88,6 @@ Query 尝试过原生 `Read` 后，Worker 可能保留动态发现的 Skill，�
 启用项目来源时，后续 Skill 检查返回 `skill_resolution_error`，包括 Read 失败、
 被拒绝或空闲更新策略的情况。必需检查应新建 Query，或从创建时使用
 `settingSources: ["user"]`。
-
-## 由应用自行启动
-
-Node 应用可以自行准备 AW 实例，保留原来的启动命令。首次接入时，在导入桥接模块、
-创建 daemon 或 Query 前加入以下代码。AW Service 应已使用同一份 `aw.yaml` 启动，
-其中 `sdk` 目标配置本应用的 Node 可执行文件和入口。
-
-```javascript
-import { execFileSync } from "node:child_process";
-
-const instance = JSON.parse(execFileSync("aw", [
-  "instance", "prepare", "--agent", "sdk",
-], { encoding: "utf8", timeout: 30000, maxBuffer: 1048576 }));
-Object.assign(process.env, instance.environment);
-```
-
-接着使用上文的受管工厂。准备阶段返回待就绪实例，`startDaemon()` 或完成初始化的
-`createQuery()` 确认原生接线就绪。准备失败时停止启动。所有受保护的新建、恢复 Query
-均须通过返回的桥接模块创建；尚未接入的运行中应用需要重启一次。
-
-在 `aw.yaml` 所在目录启动应用：
-
-```bash
-node /absolute/application/worker.mjs
-aw status --config aw.yaml
-aw instance update --agent sdk
-```
-
-在另一个终端执行状态和更新命令。修改 `aw.yaml` 后，暂停新建 Query、关闭现有 Query，
-再执行更新。多个 worker 使用 `aw instance update --instance INSTANCE` 明确选择实例。
-两种启动方式沿用相同的常驻策略、原生配置和清理规则。所有 Query 关闭、daemon 停止后，
-在应用的 `finally` 中释放准备的实例：
-
-```javascript
-execFileSync("aw", ["instance", "release", "--binding", instance.binding],
-  { encoding: "utf8", timeout: 10000 });
-```
 
 ## 原生配置
 
@@ -147,9 +110,7 @@ settings、插件、Hook 和权限选项沿用原值。探测、普通 Query、�
 创建均经过 Bridge；配置了 AW 时，准入失败须向调用方返回。应用入口支持 `.js` 与 `.mjs`。
 
 一次性预热使用 `await bridge.startup({options})`：初始化期间不提交 prompt，
-`warm.query(prompt)` 再次校验 scope 有效性。每个预热对象只能使用一次，关闭前持有实例和任务
-scope；空闲策略更新前先关闭预热对象。按[接流前准备](../deployment/lifecycle.md#接流前准备)
-与配置的输入 scanner 并行初始化。未使用的实例通过 `await warm.close()`
+`warm.query(prompt)` 再次校验 scope 有效性。未使用的实例通过 `await warm.close()`
 清理。AW 启停保持 SDK/Worker 文件不变；移除 AW 接入时，重启应用并恢复原生工厂调用。
 
 原生 SDK 进程内 MCP 保留 schema transform 和默认值：AW 检查解析后的 handler 输入，
@@ -173,7 +134,7 @@ wrapper 须启动所选 SDK 的 Worker，镜像保留其 preload 资产与环境
 | 权限与输入 | 保留原生拒绝，检查公开 Hook 可见的参数；后续原生改写未经过最终执行前再次检查 |
 | 环境与认证 | 共享 daemon 的 Query 不覆盖 env/auth；更换凭据用原生 `daemon.auth()`；不同凭据可用独立 daemon |
 | 后置检查 | 普通常驻 Query 通过 `updatedToolOutput` 采用单文本槽的 `replace_result`，包括原生 `Read` 文本结果中的 `/file/content`；文件元数据保留，PII 检查也覆盖保留字段；检查失败用 `withhold_result` 停止交付。受限 `--reloadable` 模式仍仅支持观察。 |
-| AgentSight | 每个确认就绪的 Query 独立保存有界回调观测，随 Scope 关闭。原生 session/tool-call 关联已核验；AgentSight 来源进程身份需单独核验，证据不可用时覆盖保持未知 |
+| AgentSight | 普通 resident 设置 `evidence.mode: off` |
 | worktree | 普通模式回调携带父 Query cwd，依赖实际执行目录的策略不支持 worktree；受限模式直接拒绝 |
 
 清理须等待原生 Query、Hook、权限、凭据及 MCP 回调排空。私有租约清理失败或超时会封锁新工作，修复后重启 worker。

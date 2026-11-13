@@ -1155,9 +1155,8 @@ impl DaemonState {
     pub fn rearm_watcher(&self, ws_id: &str, registration_path: &Path) -> bool {
         match WorkspaceWatcher::start(registration_path) {
             Ok(watcher) => {
-                let covered = !watcher.is_degraded();
                 self.register_watcher(ws_id.to_string(), watcher);
-                covered
+                true
             }
             Err(e) => {
                 warn!(
@@ -1167,31 +1166,6 @@ impl DaemonState {
                 false
             }
         }
-    }
-
-    /// Swap the live tree with its old descriptors released. The pause
-    /// restores coverage on both success and failure, before callers handle
-    /// the backend result or update the index.
-    pub(crate) async fn rollback_with_watcher(
-        &self,
-        ws_id: &str,
-        registration_path: &Path,
-        snapshot_id: &str,
-        pause: crate::fs_watcher::RollbackWatchPause,
-    ) -> anyhow::Result<PathBuf> {
-        let result = self.backend.rollback(ws_id, snapshot_id).await;
-        drop(pause);
-        // Preserve the existing opportunity to install a watcher for a
-        // workspace whose initial registration failed.
-        if result.is_ok()
-            && self
-                .watchers
-                .lock()
-                .is_ok_and(|watchers| !watchers.contains_key(ws_id))
-        {
-            self.rearm_watcher(ws_id, registration_path);
-        }
-        result
     }
 
     /// True when the stored watch targets the inode currently behind the
@@ -1229,8 +1203,7 @@ impl DaemonState {
             .unwrap_or(false)
     }
 
-    /// Check if a workspace is quiescent: no write-relevant event for a
-    /// full [`crate::fs_watcher::QUIET_WINDOW_MS`].
+    /// Check if a workspace is quiescent (no recent writes).
     ///
     /// `registration_path` is supplied by the guarded flows, which call this
     /// check while already holding the workspace's WRITE lock — for them the
@@ -1249,18 +1222,11 @@ impl DaemonState {
         ws_id: &str,
         registration_path: Option<&Path>,
     ) -> Quiescence {
-        if self.watchers.lock().is_ok_and(|watchers| {
-            watchers
-                .get(ws_id)
-                .is_some_and(WorkspaceWatcher::rollback_paused)
-        }) {
-            return Quiescence::MonitoringUnavailable;
-        }
         // Defense in depth: rollback re-arms the watch proactively, but any
         // other path that replaced the live subvolume (or a failed re-arm)
         // would leave the watch on a dead inode — indistinguishable from a
-        // healthy one by the watermark alone, since no events ever arrive.
-        // Heal it before deciding.
+        // healthy one by the flag alone, since no events ever arrive. Heal
+        // it before deciding.
         let heal_path = match registration_path {
             Some(path) => Some(path.to_path_buf()),
             // Lock-free callers only: guarded flows hold the write lock, so
@@ -1269,116 +1235,110 @@ impl DaemonState {
                 .get_by_wsid(ws_id)
                 .and_then(|arc| arc.try_read().ok().map(|ws| ws.path.clone())),
         };
+        let mut fresh_watch = false;
         if let Some(path) = heal_path {
             // Heal when the stored watch went stale OR when its route lost
             // kernel coverage (a failed survivor re-arm marked it
             // degraded). Identity alone cannot prove coverage: the root can
             // be renamed away while the re-arm fails and the SAME inode
-            // moved back, leaving a permanently stale watermark behind
-            // (#7592 review). A re-armed watcher is born "just active"
-            // (`WorkspaceWatcher::start`), so the check below observes a
-            // full quiet window before an already-active writer could slip
-            // through unobserved.
-            if (!self.watcher_target_is_current(ws_id, &path) || self.watcher_route_degraded(ws_id))
-                && !self.rearm_watcher(ws_id, &path)
-            {
-                // The watch is known stale or degraded and re-arming
-                // failed: monitoring is unavailable, so quiescence cannot
-                // be established from the retired inode's (permanently
-                // stale) watermark. Report that instead of assuming
-                // quiescence.
-                return Quiescence::MonitoringUnavailable;
-            }
-        }
-        // Concurrent daemon operations on the same workspace (a heal
-        // re-arming the watch while a sibling check observes) can void a
-        // single window with our own registrations. Re-observe once before
-        // failing closed; a walk that outlasts both waits still reports
-        // activity, so #8448 stays fixed.
-        const ATTEMPTS: u8 = 2;
-        for attempt in 0..ATTEMPTS {
-            let last_attempt = attempt + 1 == ATTEMPTS;
-            // Sample the watcher without holding the table across `await`.
-            // The registration evidence is instance-wide: one recursive walk
-            // pauses delivery for every workspace, not just the one being
-            // registered (#8448).
-            let sampled = {
-                let watchers = match self.watchers.lock() {
-                    Ok(w) => w,
-                    Err(_) => return Quiescence::Safe,
-                };
-                match watchers.get(ws_id) {
-                    Some(w) => Some((
-                        w.last_activity(),
-                        w.quiescence_evidence(),
-                        w.delivery_settling(),
-                        w.is_degraded(),
-                        std::sync::Arc::clone(w.shared()),
-                    )),
-                    None => None,
-                }
-            };
-            let Some((activity, evidence, settling, degraded, shared)) = sampled else {
-                return Quiescence::Safe;
-            };
-            // Monitoring is unavailable: quiescence cannot be established.
-            if degraded {
-                return Quiescence::MonitoringUnavailable;
-            }
-            // A walk pauses delivery for the shared instance, so the
-            // watermark may stay stale only because its events are still
-            // queued. A check must not decide during one (#8448); the retry
-            // above covers a walk that is our own sibling operation
-            // finishing.
-            if crate::fs_watcher::delivery_paused(&shared) {
-                if last_attempt {
-                    return Quiescence::Writing;
-                }
-                continue;
-            }
-            let still_current =
-                || self.quiescence_observation_still_current(ws_id, &activity, &evidence);
-            match crate::fs_watcher::observe_once(&activity, settling, still_current).await {
-                crate::fs_watcher::ObservationAttempt::Quiet => return Quiescence::Safe,
-                crate::fs_watcher::ObservationAttempt::Active => return Quiescence::Writing,
-                // The window overlapped a write, a registration walk, or a
-                // coverage change: its silence proves nothing (#7592, #8448).
-                crate::fs_watcher::ObservationAttempt::Unstable => {
-                    if last_attempt {
-                        return Quiescence::Writing;
-                    }
+            // moved back, leaving a permanently silent flag behind (#7592
+            // review).
+            if !self.watcher_target_is_current(ws_id, &path) || self.watcher_route_degraded(ws_id) {
+                if self.rearm_watcher(ws_id, &path) {
+                    fresh_watch = true;
+                } else {
+                    // The watch is known stale or degraded and re-arming
+                    // failed: monitoring is unavailable, so quiescence
+                    // cannot be established from the retired inode's
+                    // (permanently silent) flag. Report that instead of
+                    // assuming quiescence.
+                    return Quiescence::MonitoringUnavailable;
                 }
             }
         }
-        // The loop only exits by returning; keep the type checker honest.
-        Quiescence::Writing
+        // Extract the AtomicBool from the watcher without holding the lock across await
+        let observation = {
+            let watchers = match self.watchers.lock() {
+                Ok(w) => w,
+                Err(_) => return Quiescence::Safe,
+            };
+            match watchers.get(ws_id) {
+                // Snapshot the coverage generation together with the flag:
+                // the quiet period below is only evidence when kernel
+                // coverage stays continuous throughout it.
+                Some(w) => Some((
+                    std::sync::Arc::clone(&w.is_writing_flag()),
+                    w.coverage_epoch(),
+                )),
+                None => None,
+            }
+        };
+        match observation {
+            None => Quiescence::Safe,
+            Some((flag, observed_epoch)) => {
+                // A freshly re-armed watcher's flag starts false and is set
+                // asynchronously by its forwarder task, so an already-active
+                // writer has not necessarily been observed yet: the check
+                // must complete the quiet-period observation instead of
+                // taking the not-writing shortcut to Safe.
+                if !fresh_watch && !flag.load(std::sync::atomic::Ordering::Acquire) {
+                    return Quiescence::Safe;
+                }
+                // Wait 100ms quiet period
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                flag.store(false, std::sync::atomic::Ordering::Release);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if flag.load(std::sync::atomic::Ordering::Acquire) {
+                    Quiescence::Writing
+                } else if self.quiescence_observation_voided(ws_id, &flag, observed_epoch) {
+                    // The flag stayed silent, but that only proves
+                    // quiescence when coverage was continuous for the
+                    // whole observation: a survivor re-arm under an
+                    // overlapping release interrupts coverage
+                    // mid-observation, and writes to directories the
+                    // recursive walk had not reached yet leave no event
+                    // — the check observed them as silence (#7592
+                    // review, P1). Report activity so the caller
+                    // re-observes once coverage is stable.
+                    Quiescence::Writing
+                } else {
+                    Quiescence::Safe
+                }
+            }
+        }
     }
 
-    /// Whether the observation that sampled `observed` is still valid: the
-    /// watcher was not replaced or unregistered, and its coverage and the
-    /// instance's delivery state did not change. `false` means the observed
-    /// silence proves nothing.
-    fn quiescence_observation_still_current(
+    /// Whether the quiet-period observation that snapshotted `flag` and
+    /// `observed_epoch` was invalidated afterwards: the route lost (or
+    /// lost and regained) kernel coverage, or the watcher was replaced,
+    /// so the observed flag's silence proves nothing. The decision to
+    /// return `Safe` must account for coverage changes during the
+    /// observation, not just the initial degraded check.
+    fn quiescence_observation_voided(
         &self,
         ws_id: &str,
-        observed: &std::sync::Arc<std::sync::atomic::AtomicU64>,
-        evidence: &crate::fs_watcher::QuiescenceEvidence,
+        observed_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+        observed_epoch: u64,
     ) -> bool {
         let watchers = match self.watchers.lock() {
             Ok(w) => w,
             // The watcher table is permanently unavailable: cannot prove
             // the observation stayed valid — fail closed.
-            Err(_) => return false,
+            Err(_) => return true,
         };
         match watchers.get(ws_id) {
             // The watcher vanished mid-observation (unregister racing the
-            // check): the observed watermark belongs to a retired handle.
-            None => false,
+            // check): the observed flag belongs to a retired handle.
+            None => true,
             Some(w) => {
                 // A concurrent heal replaced the watcher: the observed
-                // watermark is retired, and its silence proves nothing.
-                std::sync::Arc::ptr_eq(&w.last_activity(), observed)
-                    && w.quiescence_evidence_is_current(*evidence)
+                // flag is retired, and its silence proves nothing.
+                !std::sync::Arc::ptr_eq(&w.is_writing_flag(), observed_flag)
+                    // Coverage was interrupted during the observation —
+                    // possibly restored already (the mark cleared), which
+                    // the interruption counter still detects.
+                    || w.is_degraded()
+                    || w.coverage_epoch() != observed_epoch
             }
         }
     }
@@ -1734,7 +1694,7 @@ mod tests {
         // interrupts the survivor's kernel coverage for the whole
         // recursive re-arm. A quiescence check that entered its quiet
         // period while the route still looked healthy used to trust the
-        // watermark's silence: writes to directories the re-arm had not
+        // flag's silence: writes to directories the re-arm had not
         // reached yet (here: the entire tree, because the re-arm of the
         // renamed-away root failed) leave no event, so the check could
         // return Safe mid-interruption. The Safe decision must account
@@ -1745,15 +1705,14 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         let outer_watcher = crate::fs_watcher::WorkspaceWatcher::start(outer.path()).unwrap();
         let nested_watcher = crate::fs_watcher::WorkspaceWatcher::start(&nested).unwrap();
-        let observed = nested_watcher.last_activity();
-        let armed = observed.load(std::sync::atomic::Ordering::Acquire);
+        let observed_flag = nested_watcher.is_writing_flag();
 
         let state = DaemonState::new(test_config(), test_backend(), test_state_dir());
         state.register_watcher("ws-nested".to_string(), nested_watcher);
 
         // An active writer makes the workspace genuinely busy, so the
         // check must run the full quiet-period observation instead of
-        // taking the idle shortcut.
+        // taking the not-writing shortcut.
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let writer = {
             let stop = std::sync::Arc::clone(&stop);
@@ -1771,11 +1730,11 @@ mod tests {
                 }
             })
         };
-        // Gate: wait until the writer is OBSERVED before starting the
-        // check, so the observation is guaranteed to be in progress when
-        // the interruption begins.
+        // Latch gate: wait until the writer is OBSERVED before starting
+        // the check, so the observation is guaranteed to be in progress
+        // when the interruption begins.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while observed.load(std::sync::atomic::Ordering::Acquire) <= armed {
+        while !observed_flag.load(std::sync::atomic::Ordering::Acquire) {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the nested watcher never observed the writer"
@@ -1784,10 +1743,11 @@ mod tests {
         }
 
         // The check runs concurrently; the interruption happens well
-        // inside its quiet-period sleep: rename the nested root away, drop
-        // the outer handle (survivor stamp + unwatch + failed re-arm of the
-        // now-missing path), then move it back. The writer keeps writing
-        // the whole time — into a tree nothing watches anymore.
+        // inside its first 100 ms quiet-period sleep: rename the nested
+        // root away, drop the outer handle (survivor latch + unwatch +
+        // failed re-arm of the now-missing path), then move it back. The
+        // writer keeps writing the whole time — into a tree nothing
+        // watches anymore.
         let state = std::sync::Arc::new(state);
         let check = {
             let state = std::sync::Arc::clone(&state);
@@ -2908,168 +2868,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overlapping_rollback_pauses_restore_coverage_after_the_last_swap() {
-        let (_root, state, parent) = watcher_fixture();
-        let child = parent.join("child");
-        std::fs::create_dir(&child).unwrap();
-        for (id, path) in [("ws", &parent), ("child", &child)] {
-            state.register_watcher(id.to_string(), WorkspaceWatcher::start(path).unwrap());
-        }
-
-        let parent_pause = WorkspaceWatcher::pause_for_rollback(&parent).unwrap();
-        let child_pause = WorkspaceWatcher::pause_for_rollback(&child).unwrap();
-        drop(parent_pause);
-        for (id, path) in [("ws", &parent), ("child", &child)] {
-            assert!(!state.has_watcher(id));
-            assert_eq!(
-                state.check_workspace_quiescent(id, Some(path)).await,
-                Quiescence::MonitoringUnavailable
-            );
-        }
-
-        drop(child_pause);
-        assert!(state.has_watcher("ws"));
-        assert!(state.has_watcher("child"));
-    }
-
-    #[cfg(target_os = "linux")]
-    fn inotify_watch_count() -> usize {
-        std::fs::read_dir("/proc/self/fdinfo")
-            .unwrap()
-            .filter_map(|entry| std::fs::read_to_string(entry.unwrap().path()).ok())
-            .map(|info| {
-                info.lines()
-                    .filter(|line| line.starts_with("inotify wd:"))
-                    .count()
-            })
-            .sum()
-    }
-
-    #[cfg(target_os = "linux")]
-    async fn assert_repeated_swaps_release_watches(test_name: &str, pause_before_swap: bool) {
-        use std::fs;
-        use std::sync::atomic::Ordering;
-        use std::time::Duration;
-
-        // Other unit tests watch directories concurrently. Run just this
-        // case in a fresh process so its fdinfo counts have an exact baseline.
-        const ISOLATED_TEST: &str = "WS_CKPT_WATCH_COUNT_TEST";
-        if std::env::var(ISOLATED_TEST).as_deref() != Ok(test_name) {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", test_name, "--nocapture"])
-                .env(ISOLATED_TEST, test_name)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-                "{test_name}:\n{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-
-        let root = tempfile::tempdir().unwrap();
-        let live = root.path().join("live");
-        let child = live.join("child");
-        let file = child.join("sub/data");
-        let workspaces = [("ws", &live), ("child", &child)];
-        let create_tree = || {
-            fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(&file, "original").unwrap();
-        };
-        create_tree();
-        let baseline = inotify_watch_count();
-        let state = DaemonState::new(test_config(), test_backend(), test_state_dir());
-        for (id, path) in workspaces {
-            state
-                .register_workspace(id.into(), path.clone(), SnapshotIndex::new(path.clone()))
-                .unwrap();
-            state.register_watcher(id.into(), WorkspaceWatcher::start(path).unwrap());
-        }
-        // The two registrations share the three directories' descriptors.
-        assert_eq!(inotify_watch_count(), baseline + 3);
-
-        for round in 0..4 {
-            let pause =
-                pause_before_swap.then(|| WorkspaceWatcher::pause_for_rollback(&live).unwrap());
-            if pause.is_some() {
-                assert_eq!(inotify_watch_count(), baseline, "paused round {round}");
-            }
-            // Keep the old trees alive so the kernel cannot free their watches
-            // for us when they are deleted.
-            fs::rename(&live, root.path().join(format!("retired-{round}"))).unwrap();
-            create_tree();
-            drop(pause);
-            if !pause_before_swap {
-                // A child can be the first workspace to notice the parent swap.
-                assert_ne!(
-                    state.check_workspace_quiescent("child", Some(&child)).await,
-                    Quiescence::MonitoringUnavailable,
-                    "self-heal failed in round {round}"
-                );
-            }
-            assert_eq!(inotify_watch_count(), baseline + 3, "round {round}");
-
-            let watermarks = workspaces.map(|(id, path)| {
-                assert!(state.has_watcher(id), "{id} is uncovered in round {round}");
-                assert!(state.watcher_target_is_current(id, path));
-                let activity = state
-                    .watchers
-                    .lock()
-                    .unwrap()
-                    .get(id)
-                    .unwrap()
-                    .last_activity();
-                let before = activity.load(Ordering::Acquire);
-                (activity, before)
-            });
-            while watermarks
-                .iter()
-                .any(|(_, before)| crate::fs_watcher::activity_now_ms() <= *before)
-            {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-            fs::write(&file, "changed").unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while watermarks
-                    .iter()
-                    .any(|(activity, before)| activity.load(Ordering::Acquire) <= *before)
-                {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap_or_else(|_| panic!("parent or child missed the write in round {round}"));
-        }
-
-        state.unregister_workspace("child").await;
-        state.unregister_workspace("ws").await;
-        assert_eq!(inotify_watch_count(), baseline);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn repeated_rollback_swaps_release_watches() {
-        assert_repeated_swaps_release_watches(
-            "state::tests::repeated_rollback_swaps_release_watches",
-            true,
-        )
-        .await;
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn repeated_self_heal_swaps_release_watches() {
-        assert_repeated_swaps_release_watches(
-            "state::tests::repeated_self_heal_swaps_release_watches",
-            false,
-        )
-        .await;
-    }
-
-    #[tokio::test]
     async fn quiescence_check_self_heals_a_stale_watch() {
         // Swap the inode WITHOUT going through rollback (simulating any
         // other swap path or a failed proactive re-arm): the check must
@@ -3252,36 +3050,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quiescence_gate_fails_closed_while_another_workspace_registers() {
-        // The daemon entry point (guarded checkpoint/rollback, regular
-        // snapshots) must apply the same registration guard as the watcher
-        // helper: a recursive walk on the shared instance pauses event
-        // delivery for every workspace, so a silent flag is not evidence
-        // (#8448).
-        let (_root, state, anchor) = watcher_fixture();
-        let watcher =
-            crate::fs_watcher::WorkspaceWatcher::start(&anchor).expect("arm initial watch");
-        state.register_watcher("ws".to_string(), watcher);
-
-        // Another workspace's registration is walking the shared instance.
-        let hold = crate::fs_watcher::TestRegistrationHold::begin();
-        assert_eq!(
-            state.check_workspace_quiescent("ws", Some(&anchor)).await,
-            Quiescence::Writing,
-            "an in-flight registration walk must void the daemon's silence evidence"
-        );
-
-        // Once the walk ends and its queued events drain, the idle workspace
-        // is safe again.
-        drop(hold);
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        assert_eq!(
-            state.check_workspace_quiescent("ws", Some(&anchor)).await,
-            Quiescence::Safe
-        );
-    }
-
-    #[tokio::test]
     async fn a_freshly_rearmed_watch_observes_an_already_active_writer() {
         // The reviewed gap: after the heal re-arms a stale watch mid-write,
         // the fresh watcher's flag starts false and is set asynchronously by
@@ -3303,13 +3071,10 @@ mod tests {
                 use std::io::Write as _;
                 let file = std::fs::File::create(live.join("busy.log")).unwrap();
                 let mut writer = std::io::BufWriter::new(file);
-                // Write faster than the observation's 100 ms window can
-                // elapse without an event, so a loaded runner cannot starve
-                // the forwarder for the whole window.
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     writeln!(writer, "busy").unwrap();
                     writer.flush().unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             })
         };

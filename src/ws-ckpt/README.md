@@ -24,7 +24,7 @@ After a successful rollback through the OpenClaw or Hermes plugin, the next
 turn-end checkpoint is skipped only for the restored workspace, whether the
 rollback uses its ID or registered path. Other
 workspaces keep their automatic checkpoints; preview and failed rollbacks do
-not suppress them. Both plugins keep this state within the originating session,
+not suppress them. OpenClaw keeps this state within the originating session,
 so another session finishing first cannot consume it.
 
 ## Project Structure
@@ -199,9 +199,8 @@ For BtrfsBase, set `[backend.btrfs-base] btrfs_mount = "/data"` to pin an
 existing writable btrfs mount; data lives at `/data/ws-ckpt-data`. Restart to apply
 backend settings. Without a pin, restarts reuse the persisted mount and fail if
 it is unavailable. Changing the pin deliberately switches roots: previous
-snapshots become invisible and startup can prune unpinned indexes. Switching
-back does not recover them; leftover subvolumes reappear as pinned recovered
-orphans. Back up state and data before changing it. `daemon --mount-path` applies only to BtrfsLoop.
+snapshots become invisible and startup can prune unpinned indexes. Back up state
+and data before changing it. `daemon --mount-path` applies only to BtrfsLoop.
 See [storage selection](../../docs/user-guide/en/ws-ckpt/index.md#storage-backend-selection).
 
 ## Command Reference

@@ -58,7 +58,7 @@ fn managed_response_iterators_close_before_native_teardown() {
     let output = fixture.run(command);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success() && stderr.contains("Ran 19 tests") && stderr.contains("\nOK\n"),
+        output.status.success() && stderr.contains("Ran 15 tests") && stderr.contains("\nOK\n"),
         "{stderr}"
     );
 }
@@ -182,14 +182,7 @@ fn claude_hook_cli_preserves_deny_success_failure_identity_and_audit() {
     }
     let mut found = BTreeMap::new();
     for entry in fs::read_dir(fixture.root.join("state/journal")).unwrap() {
-        let path = entry.unwrap().path();
-        if path
-            .extension()
-            .is_none_or(|extension| extension != "jsonl")
-        {
-            continue;
-        }
-        let entries: Vec<Value> = fs::read_to_string(path)
+        let entries: Vec<Value> = fs::read_to_string(entry.unwrap().path())
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -293,7 +286,7 @@ fn shared_python_scope_monitors_failure_and_joins_concurrent_cleanup() {
     let output = fixture.run(command);
     let report = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success() && report.contains("Ran 6 tests"),
+        output.status.success() && report.contains("Ran 5 tests"),
         "{report}"
     );
 }

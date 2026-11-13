@@ -7,10 +7,7 @@ pub(crate) mod connection;
 mod dispatch;
 mod hook;
 pub(crate) mod instance;
-mod native;
-mod native_setup;
 mod policy;
-mod qoder_bootstrap;
 mod readiness;
 mod run;
 mod scope;
@@ -138,10 +135,6 @@ pub(crate) fn connect_service(args: &Arguments, deadline: Instant) -> Result<aw_
 pub(crate) fn dispatch(command: &str, args: &Arguments) -> Result<Exit> {
     match command {
         "run" => run::launch(args),
-        "qoder-bootstrap" => qoder_bootstrap::callback(args),
-        "native-setup" => native_setup::setup(args),
-        "native-prepare" => native::prepare(args),
-        "native-release" => native::release(args),
         "update" => update::update(args),
         "bridge" => bridge::lifecycle(args),
         "scope" => scope::run(args),

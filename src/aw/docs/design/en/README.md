@@ -15,7 +15,6 @@ connect through the process protocol without AW package records.
 | --- | --- |
 | Configuration | [Configuration](configuration/configuration.md) · [Editing and native sources](configuration/configuration-editing.md) |
 | Policy admission | [Core admission](core-admission.md) |
-| Native startup ownership | [Registration and task/root bridges](architecture.md#application-owned-native-startup) · [Application integration](../../../../../docs/developer-guide/en/aw/deployment/independent-instances.md) |
 | Native wiring | [Adapter dispatch](adapters/adapter-dispatch.md) |
 | Runtime | [Service](runtime/local-service.md) · [Policy updates](runtime/policy-reload.md) · [Host](runtime/provider-host.md) · [Bounded execution](runtime/bounded-execution.md) |
 | Capability plans | [Core execution](core-execution.md) |
@@ -38,10 +37,7 @@ mappings are listed in the [sec-core configuration reference](../../../../../doc
 
 ## Evidence and observation
 
-[Public runtime/audit objects](runtime/public-objects.md) · [Incremental audit reads](runtime/audit-export.md)
-
-The service captures public metadata independently of Sight and projects each
-verified Journal record using retained source identity and creation time.
+[Public runtime/audit objects](runtime/public-objects.md)
 
 [Connector](integrations/agentsight/agentsight-readonly.md) · [Evidence context](runtime/evidence-context.md) · [Integration roadmap](integrations/agentsight/agentsight-integration.md)
 

@@ -108,7 +108,6 @@ if grep -Eq 'site-packages/agent_sec_cli|agent-sec-cli-wrapper|agent-sec-daemon-
 fi
 
 python3 - "$ROOT" "$STAGE" "$TMP" <<'PY'
-import json
 import os
 import subprocess
 import sys
@@ -120,7 +119,7 @@ gateway = stage / "share/anolisa/sec-core/gateway"
 for name, source in {
     "asc_gateway_addon.py": "v2/gateway/addon/asc_gateway_addon.py",
     "asc_gateway_policy.py": "v2/gateway/addon/asc_gateway_policy.py",
-    "github.cedar": "v2/crates/asc-gateway-plan/policies/github.cedar",
+    "github-policy.json": "v2/crates/asc-gateway-plan/policies/github.json",
     "mitmproxy.provenance": "v2/gateway/mitmproxy.provenance",
     "install-mitmproxy.sh": "packaging/gateway/install-mitmproxy.sh",
 }.items():

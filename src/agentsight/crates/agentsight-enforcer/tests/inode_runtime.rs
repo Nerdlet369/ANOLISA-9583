@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{OnceLock, mpsc::Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use agentsight_enforcement_protocol::{
@@ -17,9 +17,6 @@ use agentsight_enforcement_protocol::{
 };
 use agentsight_enforcer::{ActPlaneBackend, BackendError, EnforcementBackend, SubscriberClass};
 use uuid::Uuid;
-
-const LEGACY_BINARY_ENV: &str = "ACTPLANE_TEST_LEGACY_ENFORCER_BIN";
-const LEGACY_INSTALL_ENV: &str = "ACTPLANE_TEST_LEGACY_PIN_INSTALL";
 
 const WORKER: &str = r#"
 import errno, os, socket, sys
@@ -49,15 +46,6 @@ for line in sys.stdin:
             child = subprocess.run(['cat', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if child.returncode != 0:
                 raise OSError(errno.EPERM, 'child denied')
-        elif op.startswith('readconnectchild '):
-            import subprocess
-            child = subprocess.run([
-                'python3', '-c',
-                "import socket,sys; f=open(sys.argv[1],'rb'); f.read(); f.close(); s=socket.socket(); s.setblocking(False); s.connect_ex((sys.argv[2],9))",
-                path, op.split()[1],
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if child.returncode != 0:
-                raise OSError(errno.EPERM, 'child credential flow failed')
         elif op == 'holdmap':
             import mmap
             heldmaps.append(mmap.mmap(fd, 0, flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ))
@@ -373,18 +361,6 @@ impl Drop for TreeWorker {
     }
 }
 
-fn fresh_pin_root(name: &str) -> PathBuf {
-    static PARENT: OnceLock<PathBuf> = OnceLock::new();
-    // Fixture setup replaces the process variable; later fixtures reuse the original parent.
-    PARENT
-        .get_or_init(|| {
-            std::env::var_os("ACTPLANE_BPF_PIN_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("/sys/fs/bpf"))
-        })
-        .join(name)
-}
-
 struct Files {
     root: PathBuf,
     pin_root: PathBuf,
@@ -394,7 +370,7 @@ impl Files {
     fn new(profile: &str) -> Self {
         let name = format!("ap-{}", &Uuid::new_v4().simple().to_string()[..10]);
         let root = PathBuf::from("/tmp").join(&name);
-        let pin_root = fresh_pin_root(&name);
+        let pin_root = PathBuf::from("/sys/fs/bpf").join(name);
         fs::create_dir(&root).expect("test directory");
         fs::write(
             root.join("source"),
@@ -438,7 +414,7 @@ impl TreeFiles {
         let outer = PathBuf::from("/dev/shm").join(&name);
         let root = outer.join("protected");
         let outside = outer.join("outside");
-        let pin_root = fresh_pin_root(&name);
+        let pin_root = PathBuf::from("/sys/fs/bpf").join(name);
         fs::create_dir_all(root.join("nested")).expect("protected tree");
         fs::create_dir(&outside).expect("outside directory");
         fs::write(root.join("existing"), b"existing").expect("existing descendant");
@@ -496,184 +472,6 @@ fn read_policy(worker: &Worker, path: &str) -> ApplyPolicy {
             }],
         }),
     }
-}
-
-#[test]
-#[ignore = "requires root, active BPF LSM, unlimited memlock, and --test-threads=1"]
-fn preexisting_target_enforced_in_nested_pid_namespace() {
-    const CHILD_ENV: &str = "ACTPLANE_TEST_ENFORCEMENT_PIDNS";
-    if std::env::var_os(CHILD_ENV).is_none() {
-        let test_binary = std::env::current_exe().expect("current test binary");
-        let status = Command::new("unshare")
-            .args(["--pid", "--fork", "--mount-proc"])
-            .arg(test_binary)
-            .args([
-                "preexisting_target_enforced_in_nested_pid_namespace",
-                "--exact",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(CHILD_ENV, "1")
-            .status()
-            .expect("spawn PID-namespaced enforcement test");
-        assert!(status.success(), "nested PID namespace enforcement failed");
-        return;
-    }
-
-    let files = Files::new("agent-file-guard");
-    let path = files.source();
-    let mut worker = Worker::spawn(&path);
-    let backend = ActPlaneBackend::open().expect("real kernel backend");
-    let capabilities = backend.health().expect("nested health").capabilities;
-    assert!(capabilities.file_delete_guard);
-    assert!(capabilities.file_entry_delete_protection);
-    let events = backend.subscribe(Uuid::new_v4(), SubscriberClass::Required);
-    let request = read_policy(&worker, &path);
-    let local_pid = request.root_pid;
-    let start_time = request.process_start_time;
-    let binding = backend
-        .apply(request)
-        .expect("apply to existing namespaced target");
-    assert_eq!(worker.run("read"), "errno=1", "target read must be denied");
-    let event = events
-        .recv_timeout(Duration::from_secs(5))
-        .expect("read violation evidence");
-    assert_eq!(event.operation, "read");
-    assert!(event.blocked);
-    assert_ne!(event.pid, local_pid, "event must use kernel PID");
-    assert_eq!(event.process_start_time, start_time);
-
-    assert_eq!(worker.run("readchild"), "errno=1");
-    let child_event = events
-        .recv_timeout(Duration::from_secs(5))
-        .expect("descendant read violation evidence");
-    assert_eq!(child_event.operation, "read");
-    assert!(child_event.blocked);
-    assert_ne!(child_event.pid, event.pid, "event must identify the child");
-    assert_ne!(
-        child_event.process_start_time, 0,
-        "descendant start time must come from the kernel event"
-    );
-    backend.detach(binding.request.binding_id).expect("detach");
-    assert_eq!(worker.run("read"), "ok", "detach must remove enforcement");
-
-    let mut delete_request = read_policy(&worker, &path);
-    delete_request.binding_id = Uuid::new_v4();
-    delete_request.policy_id = "file-deny-delete".into();
-    let delete_policy = delete_request
-        .file_protection_policy
-        .as_mut()
-        .expect("delete policy");
-    delete_policy.targets[0].protections = FileProtections {
-        delete: true,
-        ordinary_write: false,
-        read: false,
-    };
-    let delete_binding = backend
-        .apply(delete_request)
-        .expect("apply delete guard in nested PID namespace");
-    assert_eq!(worker.run("unlink"), "errno=1");
-    let delete_event = events
-        .recv_timeout(Duration::from_secs(5))
-        .expect("unlink violation evidence");
-    assert_eq!(delete_event.operation, "unlink");
-    assert!(delete_event.blocked);
-    assert_eq!(delete_event.pid, event.pid);
-    assert_eq!(delete_event.process_start_time, start_time);
-    backend
-        .detach(delete_binding.request.binding_id)
-        .expect("detach delete guard");
-    assert_eq!(worker.run("unlink"), "ok", "detach must permit unlink");
-    fs::write(&path, b"synthetic fixture, not a credential\n").expect("restore credential fixture");
-    assert_eq!(worker.run("read"), "ok");
-    backend.shutdown().expect("shutdown");
-    drop(backend);
-
-    let credential_files = Files::new("credential-exfiltration");
-    let backend = ActPlaneBackend::open().expect("credential backend");
-    let events = backend.subscribe_security_events();
-    let binding = backend
-        .apply_credential_policy(ApplyCredentialPolicy {
-            binding_id: Uuid::new_v4(),
-            agent_id: "nested-credential-test".into(),
-            session_id: None,
-            root_pid: worker.pid(),
-            process_start_time: worker.start_time(),
-            policy: CredentialExfiltrationPolicy {
-                policy_id: "nested-credential-fixture".into(),
-                revision: 1,
-                source_patterns: vec![path.clone()],
-                trusted_endpoints: vec!["9.9.9.9".into()],
-                taint_label: "CREDENTIAL".into(),
-                taint_ttl_secs: 900,
-                destination_scope: DestinationScope::PublicIpv4,
-                mode: PolicyMode::Audit,
-            },
-        })
-        .expect("apply credential policy to existing namespaced target");
-    assert_eq!(worker.run("readconnectchild 8.8.8.8"), "ok");
-    receive_chain(&events, &path);
-    backend
-        .detach(binding.request.binding_id)
-        .expect("detach credential policy");
-    backend.shutdown().expect("shutdown credential backend");
-    drop(credential_files);
-}
-
-#[test]
-#[ignore = "requires root, BPF LSM, and ACTPLANE_TEST_LEGACY_ENFORCER_BIN"]
-fn pre_start_boottime_pin_upgrade_restores_violation_delivery() {
-    let legacy_binary = std::env::var_os(LEGACY_BINARY_ENV).expect("legacy enforcer test binary");
-    let files = Files::new("agent-file-guard");
-    let status = Command::new(legacy_binary)
-        .args([
-            "actplane_legacy_pin_install_for_upgrade_test",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .env(LEGACY_INSTALL_ENV, "1")
-        .status()
-        .expect("install legacy pinned engine");
-    assert!(status.success(), "legacy pinned engine installation failed");
-
-    let old_marker = files.pin_root.join(
-        "maps/agentsight_profile_agent_file_guard_v8_a62e5d9d96f91101cda019519053e950d532380a",
-    );
-    let current_marker = files.pin_root.join(
-        "maps/agentsight_profile_agent_file_guard_v9_a62e5d9d96f91101cda019519053e950d532380a",
-    );
-    assert!(old_marker.exists(), "legacy ABI marker must be present");
-
-    let path = files.source();
-    let mut worker = Worker::spawn(&path);
-    let backend = ActPlaneBackend::open().expect("upgrade legacy pinned engine");
-    assert!(!old_marker.exists(), "legacy ABI pin must be replaced");
-    assert!(current_marker.exists(), "current ABI marker must be pinned");
-    let events = backend.subscribe(Uuid::new_v4(), SubscriberClass::Required);
-    let request = read_policy(&worker, &path);
-    let start_time = request.process_start_time;
-    let binding = backend.apply(request).expect("apply after ABI upgrade");
-    assert_eq!(worker.run("read"), "errno=1");
-    let event = events
-        .recv_timeout(Duration::from_secs(5))
-        .expect("violation delivered after ABI upgrade");
-    assert_eq!(event.operation, "read");
-    assert!(event.blocked);
-    assert_eq!(event.process_start_time, start_time);
-    backend.detach(binding.request.binding_id).expect("detach");
-    backend.shutdown().expect("shutdown");
-}
-
-#[test]
-#[ignore = "internal helper for the pinned ABI upgrade test"]
-fn actplane_legacy_pin_install_for_upgrade_test() {
-    assert!(std::env::var_os(LEGACY_INSTALL_ENV).is_some());
-    let backend = ActPlaneBackend::open().expect("install legacy pinned engine");
-    backend.shutdown().expect("shutdown legacy backend");
-    drop(backend);
 }
 
 #[test]
@@ -1669,21 +1467,13 @@ fn receive_chain(events: &Receiver<SecurityEvent>, source: &str) {
         let event = events
             .recv_timeout(Duration::from_secs(3))
             .expect("credential security event");
-        assert_ne!(
-            event.identity.process_start_time, 0,
-            "credential event identity must include a kernel-derived start time"
-        );
         match event.kind {
             SecurityEventKind::FileAction(action) => {
                 assert_eq!(action.path, source);
                 assert_eq!(action.operation, "open");
                 found_source = true;
             }
-            SecurityEventKind::TaintTransition(taint) => {
-                assert_ne!(taint.source_process_start_time, 0);
-                assert_ne!(taint.target_process_start_time, 0);
-                found_taint = true;
-            }
+            SecurityEventKind::TaintTransition(_) => found_taint = true,
             SecurityEventKind::NetworkAction(_) => found_network = true,
             SecurityEventKind::EnforcementState(state) => {
                 panic!("unexpected runtime state: {state:?}")
@@ -1787,13 +1577,8 @@ fn private_tmp_credential_binding_on_live_kernel() {
 
 #[test]
 #[ignore = "requires root, active BPF LSM, unlimited memlock, and --test-threads=1"]
-fn file_guard_on_live_kernel() {
+fn inode_guard_and_credential_events_on_live_kernel() {
     file_guard();
-}
-
-#[test]
-#[ignore = "requires root, active BPF LSM, unlimited memlock, and --test-threads=1"]
-fn credential_events_on_live_kernel() {
     for read_operation in ["read", "readfd", "mmap"] {
         credentials(read_operation);
     }

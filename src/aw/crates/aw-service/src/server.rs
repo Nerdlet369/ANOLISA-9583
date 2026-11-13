@@ -20,10 +20,6 @@ use std::{
 };
 
 const CONTROL_RESERVE: usize = 16;
-const IDLE_WAIT_MS: i32 = 5;
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests;
 
 /// A bootstrap configuration and per-instance policies on a private same-user socket.
 /// Binding preparation executes trusted local commands with an explicit context.
@@ -67,9 +63,8 @@ impl Server {
             }
         }
         let endpoint = Endpoint::bind(state_dir)?;
-        let runtime = Runtime::from_configuration(
+        let runtime = Runtime::new(
             bytes,
-            &configuration,
             &state_dir.join("journal"),
             Arc::new(AtomicBool::new(false)),
         )?;
@@ -137,26 +132,7 @@ impl Server {
                         );
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        let mut listener = libc::pollfd {
-                            fd: self.endpoint.listener().as_raw_fd(),
-                            events: libc::POLLIN,
-                            revents: 0,
-                        };
-                        // Wake for a connection while retaining the maintenance bound.
-                        // SAFETY: the listener and pollfd remain valid for this call.
-                        let ready = unsafe { libc::poll(&mut listener, 1, IDLE_WAIT_MS) };
-                        if ready < 0 {
-                            let error = io::Error::last_os_error();
-                            if error.kind() != io::ErrorKind::Interrupted {
-                                return Err(error.into());
-                            }
-                        } else if ready > 0 && listener.revents & libc::POLLIN == 0 {
-                            return Err(io::Error::other(format!(
-                                "listener poll returned unexpected events: {}",
-                                listener.revents
-                            ))
-                            .into());
-                        }
+                        thread::sleep(Duration::from_millis(5))
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => return Err(error.into()),
@@ -217,7 +193,6 @@ fn connection(
             | Operation::OpenScope { .. }
             | Operation::Registration {
                 command: crate::RegistrationCommand::Register { .. }
-                    | crate::RegistrationCommand::RegisterNative { .. }
             }
     );
     let result = (|| {

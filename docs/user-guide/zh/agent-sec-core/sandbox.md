@@ -46,67 +46,6 @@ cat report.txt
 `--permissions` 必填，最多读取 4 MiB。程序与参数放在 `--` 后。
 命令使用调用方的工作目录和环境变量；环境变量名称和值必须是有效 UTF-8。
 
-## Cedar 输入
-
-同一个 `--permissions` 参数也接受使用 `seccore.system` schema revision 1 的原始 Cedar
-文本，或现有 `{"language":"cedar","content":{"schema":{"schemaId":"seccore.system",
-"revision":1},"text":"..."}}` 源码封装。格式按内容识别，不依赖文件名。原有 OS permission
-JSON 行为不变；使用 Cedar 不会启用 PDP 调用或启动 daemon。
-
-例如，创建 `/tmp/asc-demo` 后，将以下内容保存为 `permissions.cedar`：
-
-```cedar
-permit(principal, action == SecCore::Action::"file.read", resource);
-permit(principal, action == SecCore::Action::"file.write", resource)
-when { resource.path == "/tmp/asc-demo" || resource.path like "/tmp/asc-demo/*" };
-```
-
-```bash
-agent-sec-cli sandbox run --permissions permissions.cedar -- /bin/sh -c 'printf "sandbox\n" > /tmp/asc-demo/report.txt'
-```
-
-此示例允许广泛读取宿主文件，禁止 IP 联网。启动 Cosh 时使用相同参数，后接 `-- cosh`；
-需要明确包含其可写状态目录，模型提供方需要联网时还须允许 `network.use`。不会自动补充运行依赖。
-
-转换结果是粗粒度权限申请，不代表所有 Cedar 条件均得到等价执行：
-
-- 文件读写支持字面路径、目录前缀 `/*` 模式及布尔组合。完整目录树须同时包含目录自身的
-  等值条件及其后代模式。精确文件授权会检查本地对象；仅目录自身或仅目录后代的授权被拒绝。
-- 任一获准写操作（`write`、`create`、`delete`、`rename`、`setattr`）映射为 `write`，
-  包括读取与删除。因此，在仍有其他获准修改操作时，仅禁止 delete 不会移除 write 申请。
-- 文件的 `context.input.program` 等值或不等值条件按满足条件的程序投影，所得访问权限
-  适用于整个进程树。路径排除与无条件禁止仍然生效。
-- `network.use` 映射为全网络 `full` 或 `off`。只有 forbid 时，不推导任何正向授权。
-- 存在调用规则时，`file.exec` 和 `process.spawn` 检查初始命令及参数，不逐次限制后代
-  程序启动，也不生成 noexec 规则。需要显式 noexec 时继续使用 OS permission JSON。
-  在 PDP 流程中，这些输入检查发生在发送授权请求之前；PDP 通过 `MODIFY` 或 `STEP_UP`
-  改写命令后，不再用输入 Cedar 重查改写结果。最终命令由 PDP 授权，`STEP_UP` 还须批准返回的决定。
-
-主体特定规则、advice、不支持的文件条件（例如特定 chmod mode）、任意通配符和不可表示的
-路径区域会被拒绝。输入上限为 4 MiB、1,024 条策略；区域求值预算同时计入条件大小。
-收集路径和程序时即检查不同值的数量上限，先检查预算，再选择代表值和求值。
-Cedar 文件读写条件中的路径和程序字面量最多为 4,095 个 UTF-8 字节；捕获路径及其祖先
-另有 4 MiB 字符串总预算，每个不同路径均在复制前检查。意图候选封装不是权限文件：
-须先处理 unresolved 要求及候选有效性，再选取其中的 Cedar 文本。
-
-Cedar 文件读写条件中的路径字面量必须已经存在。准备时保留全部路径（包括排除项），解析文件、目录及
-中间路径分量中的符号链接，再按 canonical 路径求值并合并权限。经别名的 allow 不会丢弃
-对其目标的 forbid。可读别名保留给命令使用；若别名存在可写祖先则拒绝，因为祖先目录可被用于
-在安装后重定向链接。后端仍拒绝无法安全安装的重叠别名。Cedar 显式路径指向多硬链接文件时，
-会在合并权限前拒绝，因为 canonical 路径无法识别这些其他名称。完整子树的排除即使位于允许范围
-之外也保留显式 deny；PDP 保留这些申请排除项，PEP 拒绝丢弃它们的决定，因此后端执行前仍会
-检查并拒绝排除目录内的多硬链接文件。“除 `/work` 外全部禁止”这类补集仍依靠允许范围之外的
-默认拒绝，不生成会同时阻止 `/work` 的根 deny。初始程序与工作目录必须和捕获的路径
-一致；执行前再次核验已捕获的对象身份。
-
-准备 PDP 请求的应用可用 `asc_pep_runtime::PermissionInput::parse(text)` 解析当次输入，
-作为现有 `PermissionProvider` 传给 `PepRuntime::authorize` 或 `run`。JSON 与 Cedar 均
-生成 `requested_permissions`；daemon 策略仍决定最终 `effective_permissions`。输入不会
-作为授权策略上传到 PAP。`AGENT_SEC_COSH_SANDBOX_PERMISSIONS` 接受相同格式，每次 Hook
-准备请求时重新读取文件。输入变化影响下一次请求，不改变已准备的决定或运行中的沙箱。
-两个运行入口均通过 `PermissionProvider::prepare` 先绑定路径，再执行或请求授权。
-`PermissionInput::resolve` 仅用于词法预览，不生成绑定对象的执行计划。
-
 ## 权限格式
 
 | 字段 | 行为 |
@@ -126,17 +65,8 @@ Cedar 文件读写条件中的路径字面量必须已经存在。准备时保�
 
 只读不代表不可执行。noexec 阻止经该挂载直接执行，不阻止获准解释器读取脚本、经其他获准别名执行，
 也不阻止执行另一位置的副本。文件系统 deny 路径必须是 canonical 路径；后端拒绝经过 symlink 的
-deny 路径、重叠的显式挂载别名，以及显式禁止范围内的硬链接文件。noexec 路径也必须是 canonical 路径。
+deny 路径、重叠的显式挂载别名，以及禁止范围内的硬链接文件。noexec 路径也必须是 canonical 路径。
 宿主文件权限仍然生效。
-
-写权限限制的是路径，不是同一文件的全部名称。可写目录中预先存在的硬链接仍可能修改
-写权限范围外的文件。为保持启动可用性，后端不扫描可写路径中的硬链接。当 `/` 不可写
-且计划包含可写路径时，每次实际启动 strict helper 都向 stderr 输出一条 warning 后继续执行。
-即使没有硬链接也会提示；这是隔离边界说明，不是检测结果，也不保证外部文件内容受到保护。
-计划预检不会重复输出；纯只读计划和授予 `/` 写权限的计划不输出此提示。
-
-需要内容隔离时，应使用独立的文件副本。其他宿主进程仍可修改共享目录树；此 warning
-不会阻止并发创建硬链接或替换目录项。上述显式 deny 检查继续生效，仍可能拒绝执行。
 
 ## 执行行为
 
@@ -159,14 +89,15 @@ bubblewrap 初始化期间，父进程被终止可能留下尚未启动目标的
 展示请求准备、执行或 ask 前的策略警告及回执。公开执行命令仍为 `sandbox run`；
 授权接入通过库调用和 daemon RPC 完成，再使用同一本地执行后端。
 
-通过现有 `policy create/update` 命令管理 Cedar 策略，策略文件为 Cedar 原文，见
-[Policy 指南](policy-cli.md#cedar-policy-源码)。更新成功后，下一次授权请求使用新版本。
+通过现有 `policy create/update` 命令管理 Cedar 策略，策略文件使用
+[Policy 指南](policy-cli.md)中的源码封装。更新成功后，下一次授权请求使用新版本。
 
 通过 `agent-sec-daemon --authorization-config /etc/agent-sec-core/authorization.json`
-启用授权。此 root 配置设置运行参数，不保存策略 ID 或 Cedar 正文：
+启用授权。此 root 配置只选择 PAP 策略 ID 和运行参数，不保存 Cedar 策略正文，也不接受策略快照文件：
 
 ```json
 {
+  "baseline_policy": "<policy ID returned by PAP>",
   "environment_permissions": {
     "version": 1,
     "filesystem": {"default": "deny", "rules": [
@@ -179,37 +110,13 @@ bubblewrap 初始化期间，父进程被终止可能留下尚未启动目标的
 }
 ```
 
-请求主体只提供可选的 `principal.agent_type`，例如 `{"principal":{"agent_type":"cosh"}}`，
-无需登记 Agent 身份或 UID。类型由调用方提供，用于分类匹配，尚未认证；此阶段不按身份
-隔离单个 Agent。`environment_permissions` 限制每次 OS 请求的权限。
-配置及祖先目录须由 root 管理，不可被组或其他用户写入；调整运行参数后重启 daemon。
+可选 `task_policy` 指定另一份 PAP 策略 ID。两份策略均使用
+`schema: {schemaId: "seccore.system", revision: 1}`，分别求值。`environment_permissions` 限制每次 `type: "os"` 请求可获准的权限，
+由沙箱执行器约束此次启动的进程树。AgentSight 通过 Scope/Binding 选择要保护的主机进程。
+配置及祖先目录须由 root 管理，不可被组或其他用户写入；修改策略选择或运行参数后重启 daemon。
 
-PAP 从全部当前策略推导请求策略集，按精确的
-`schema: {schemaId: "seccore.system", revision: 1}` 引用校验。
-纳入的源码中每条语句都必须有显式 principal header。当前请求使用
-`principal is SecCore::Subject`，在条件中匹配 `agent_type`：
-
-```cedar
-permit(principal is SecCore::Subject,
-       action == SecCore::Action::"process.spawn", resource)
-when { principal has agent_type && principal.agent_type == "cosh" };
-```
-
-此规则只授权进程启动，还须补充应用所需的文件/网络策略。缺少类型时不会匹配此条件。
-原生 JSON 和全部使用裸 `principal` header 的源码不进入此链路；仅在 `when` 中引用
-principal 不算加入。单份存储策略混用裸 header 与显式约束会报错。
-需要共同约束请求的每条规则，包括 permit 和 forbid，都必须使用显式 principal header。
-单纯拆分不能保留共同约束语义：拆出的裸 principal forbid 不会进入请求授权集。
-只有确实面向不同处理路径的规则才适合拆分。这是 ANOLISA 的加载约定，不是 Cedar 的启用字段。
-
-每次 evaluate 拉取一个一致的当前策略快照，摘要覆盖成员、版本、schema 和正文。
-未变化时复用编译缓存，变化后整体验证成功才替换。读取、验证或运行兼容性失败时停止授权，
-不回退旧策略。创建、删除和 header 资格变化在下一次请求生效；空集替换缓存并拒绝请求。
-整个集合中匹配的 forbid 优先于 permit。Scope/Binding 的部署、固定版本和清理独立保持原状。
-
-旧配置项 `baseline_policy`、`task_policy` 会明确报错。调整旧请求策略时必须人工核对原来的
-交集语义：新集合中的两份 permit 源码会合并授权。额外限制应表达为 forbid，或收紧所有
-适用的 permit。已有部署策略不会自动改写。
+每次 evaluate 从 PAP 一起读取所选策略的当前版本；版本未变时复用已编译结果。
+策略缺失、被删除或无法用于授权时停止，不回退旧策略。已有 Scope/Binding 继续使用各自固定版本。
 
 PEP 须在 ttl_seconds 内一次性接收决定；接收后的审批等待、安装和运行不再因该期限失败。
 策略更新影响后续请求，已接收决定仍绑定原命令和权限；拒绝或执行失败后不能复用决定。
@@ -238,8 +145,7 @@ cosh
 
 这会把现有 guard 命中的 shell 命令切换到 PDP 授权；不扩大命令匹配范围，也不接管原生文件工具。
 未设置该变量时保留原行为。设置后，权限文件无效、daemon 不可用或授权失败均阻断，不回退旧沙箱或无隔离执行。
-请求直接提供 `principal.agent_type: "cosh"`，Cedar 策略须允许该类型及 `/bin/bash -c` 调用。
-会话 ID 不建立授权身份。
+请求使用 `agent_type: "cosh"` 和 `agent_id: "cosh:<session_id>"`，Cedar 策略须允许相应主体及 `/bin/bash -c` 调用。
 
 Hook 通过私有 `sandbox hook prepare` 入口准备权限申请。ALLOW/MODIFY 替换为获准命令的执行入口；
 STEP_UP 使用 Cosh 原生 ask，warn 显示为通知。daemon 保管完整请求和决定，包装命令只携带决定 ID。

@@ -129,12 +129,8 @@ Operations:
   failures warn and retain the bypass without failing the PostTool operation.
 - Tool errors pass through unchanged and may include bounded `additional_context` diagnostics.
 - Successful JSON uses `JsonCompressor`; compact JSON or TOON may be selected.
-- Recognized successful build/test/package-install output uses `BuildLogCompressor`.
-  `terminal_cleanup` removes SGR colors. The existing `build_log_reduction` label covers
-  both pnpm layout compaction and routine-progress reduction, including combined results.
-  Layout-only output is semantically `lossless`, writes no Stash and remains eligible
-  with `recovery.kind = none`; progress omissions require recovery and report `retrievable`.
-  See [pnpm boundaries](index.md#pnpm-install-output).
+- Recognized successful build/test command output uses `BuildLogCompressor`; terminal cleanup and
+  recoverable routine-progress reduction may be selected.
 - Successful CSV/TSV uses `TabularCompressor` when the host supports arbitrary text replacement.
   Only complete, cell-preserving compaction is applied when both characters and estimated tokens
   decrease; otherwise the original passes through. No Stash or recovery capability is required.
@@ -149,10 +145,9 @@ transformations instead of a configured compressor list.
 `before_model` and `post_tool` require `capabilities.recovery`: `{"kind":"none"}`,
 `{"kind":"shell"}`, or `{"kind":"tool","name":"tokenless_retrieve"}`. Tool names contain
 1–64 ASCII letters, digits, underscores, or hyphens. Unknown fields, missing recovery, and the former
-`retrieval_available` boolean are rejected. The wire version remains 2; BuildLog uses
-existing operation labels and adds no SDK enum. Only a static Tool enables recoverable
-BeforeModel schema truncation; shell recovery applies to PostTool and does not add
-or change Agent tools.
+`retrieval_available` boolean are rejected; update Core and callers together. The protocol version
+remains 2. Only a static Tool enables recoverable BeforeModel schema truncation; shell recovery
+applies to PostTool and does not add or change Agent tools.
 
 Exit codes are part of the transport contract:
 
@@ -211,11 +206,6 @@ does not require model-visibility context.
 Tokenless links RTK 0.49.0 and exposes its commands as `tokenless rtk`. The behavior
 below applies to that subcommand; a separately installed `rtk` on `PATH` can be a
 different version. Check `tokenless rtk --version` to confirm the bundled version.
-
-A `--` before the command is the end-of-options delimiter: Tokenless consumes it,
-so `tokenless rtk -- ls` runs the same command as `tokenless rtk ls` and
-`tokenless rtk -- --version` reports the bundled version. A `--` after the command
-name still reaches RTK unchanged, as in `tokenless rtk run -- echo hi`.
 
 ### Search flags
 

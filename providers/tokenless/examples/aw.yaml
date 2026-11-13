@@ -18,6 +18,9 @@ spec:
     qoder:
       adapter: qoder
       argv: [/absolute/path/to/qodercli]
+    openclaw:
+      adapter: openclaw
+      argv: [/absolute/path/to/node, /absolute/path/to/openclaw.mjs, gateway, run]
     agentscope:
       adapter: agentscope
       argv: [/absolute/path/to/sdk-python, /absolute/path/to/application.py]
@@ -70,8 +73,8 @@ spec:
         - id: rewrite-command
           provider: tokenless
           operation: pre_tool
-          effects: [replace_input]
-          on_error: block
+          effects: [block]
+          on_error: report
     tool.after:
       enabled: true
       required: true

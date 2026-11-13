@@ -42,8 +42,8 @@ def _copy_json(value: Any) -> Any:
 class Bridge:
     """Compose one foreground SDK client with its private AW launch binding."""
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.config = config if config is not None else json.loads(Path(os.environ["AW_CLAUDE_CONFIG"]).read_text())
+    def __init__(self) -> None:
+        self.config = json.loads(Path(os.environ["AW_CLAUDE_CONFIG"]).read_text())
         for key in ("executable", "binding", "ready_path", "ready_token"):
             if not isinstance(self.config.get(key), str) or not self.config[key]:
                 raise ValueError(f"AW configuration requires {key}")
@@ -119,11 +119,6 @@ class Bridge:
         specific = result.get("hookSpecificOutput", {}) if isinstance(result, dict) else {}
         if not isinstance(specific, dict):
             raise CallbackFailure("invalid_native_response")
-        updated_input = specific.get("updatedInput")
-        if (hook["event"] == "tool.before" and isinstance(updated_input, dict)
-                and result == {"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse", "updatedInput": updated_input}}):
-            return result
         updated = specific.get("updatedToolOutput")
         original = payload.get("tool_response")
         # Native MCP tools adopt a string replacement of the whole

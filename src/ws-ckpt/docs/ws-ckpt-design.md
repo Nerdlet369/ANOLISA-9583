@@ -461,18 +461,13 @@ ws-ckpt 的写操作会替换工作区 inode（btrfs subvolume + symlink swap）
 
 ### 2. 工作区写锁（inotify）
 
-`fs_watcher::WorkspaceWatcher` 监听工作区 inotify 事件，`snapshot_mgr::checkpoint` 在创建快照前调用 `check_workspace_quiescent`，要求工作区在最近 200 ms（`QUIET_WINDOW_MS`）内没有写相关事件（Create/Modify/Remove/`CLOSE_WRITE`）：
+`fs_watcher::WorkspaceWatcher` 监听工作区 inotify 事件，`snapshot_mgr::checkpoint` 在创建快照前调用 `check_workspace_quiescent` 检查是否有 in-flight 写：
 
 ```rust
-match state.check_workspace_quiescent(&ws.ws_id, Some(&ws.path)).await {
-    Quiescence::Safe => {}
-    Quiescence::Writing | Quiescence::MonitoringUnavailable => {
-        return Ok(Response::Error { code: WriteLockConflict, .. })
-    }
+if !state.check_workspace_quiescent(&ws.ws_id).await {
+    return Response::Error { code: WriteLockConflict, .. };
 }
 ```
-
-每个工作区记录最近一次写相关事件的单调时钟时间戳；任一文件的 `CLOSE_WRITE` 也算活动，不会清掉其他写者的活动（#4048）。新挂上的 watch（daemon 重启恢复、回滚 re-arm）先观察满一个窗口才可能放行。窗口模型无法区分“写者在两次突发之间暂停”与“写者已结束”：写入间隔小于窗口的写者会被拦住，间隔明显大于窗口的突发之间仍可能被快照。
 
 避免在 Agent 工具调用半途切快照导致快照内文件残缺。
 
@@ -543,11 +538,8 @@ pub trait StorageBackend: Send + Sync {
 责任；记录的挂载移到另一位置则硬错误，不自动跟随。
 
 显式修改 `btrfs_mount` 是有意换根，允许启动但在 bootstrap/reconciliation 前警告：
-旧快照不再可见，`state_dir/indexes` 中未 pinned 的记录可能被 reconciliation 清除。
-切回原根不会恢复已清除记录，其 message、创建时间和父子链均会丢失；
-原根上仍存在的快照子卷会以 recovered orphan 身份重新纳入（`pinned = true`，
-`created_at` 为纳入时间），不会被自动清理，需用 `list --orphans` 查看并显式 `delete`。
-显式换后端类型也不采用旧后端数据，并输出同样的索引风险。
+旧快照不再可见，`state_dir/indexes` 中未 pinned 的记录可能被 reconciliation 清除，
+切回原根不会恢复已清除记录。显式换后端类型也不采用旧后端数据，并输出同样的索引风险。
 同类型 Loop 恢复仍要求镜像存在；从 Base 显式切到 Loop 则可创建自己的新镜像。
 `btrfs_mount` 为 restart-only，reload 不改运行中的根目录；`--mount-path` 只服务 Loop，
 Base 发现自定义该参数时提示它不会选择 Base 位置。

@@ -85,27 +85,8 @@
       "required": true,
       "steps": [
         {
-          "id": "rewrite-command",
-          "match": {
-            "tools": [
-              "native:qoder:Bash"
-            ]
-          },
-          "provider": "tokenless",
-          "operation": "pre_tool",
-          "effects": [
-            "replace_input"
-          ],
-          "on_error": "block"
-        },
-        {
           "id": "scan-code",
-          "match": {
-            "tools": [
-              "native:qoder:Bash",
-              "native:openclaw:exec"
-            ]
-          },
+          "match": {"tools": ["native:qoder:Bash", "native:openclaw:exec"]},
           "provider": "security",
           "operation": "scan_code",
           "effects": [
@@ -115,12 +96,7 @@
           "on_error": "block"
         },
         {
-          "id": "retry-command-openclaw",
-          "match": {
-            "tools": [
-              "native:openclaw:exec"
-            ]
-          },
+          "id": "rewrite-command",
           "provider": "tokenless",
           "operation": "pre_tool",
           "effects": [
@@ -136,12 +112,7 @@
       "steps": [
         {
           "id": "observe-completion",
-          "match": {
-            "tools": [
-              "native:qoder:Bash",
-              "native:openclaw:exec"
-            ]
-          },
+          "match": {"tools": ["native:qoder:Bash", "native:openclaw:exec"]},
           "provider": "security",
           "operation": "observe_tool",
           "effects": [

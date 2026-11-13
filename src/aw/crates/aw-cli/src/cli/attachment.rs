@@ -1,7 +1,7 @@
 //! Explicit registration of a caller-owned, quiescent native process.
 
 pub(super) mod confirm;
-pub(super) mod process;
+mod process;
 
 use super::{adapter::HookBinding, read_file, readiness, run, Arguments, Exit, Result};
 use aw_adapter::{
@@ -225,7 +225,6 @@ fn attach(
         files.write(
             "binding.json",
             &serde_json::to_vec(&HookBinding {
-                registration: None,
                 adapter: name.into(),
                 reloadable: true,
                 resident_policy_reload: false,

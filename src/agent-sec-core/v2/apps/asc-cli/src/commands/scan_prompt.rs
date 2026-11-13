@@ -48,13 +48,6 @@ pub enum ScanPromptInputError {
     /// Stdin carried no input at all.
     #[error("Error: No input received from stdin.")]
     StdinEmpty,
-    /// `--text` was given but contains nothing scannable.
-    ///
-    /// A silent exit would be indistinguishable from a passed scan for a
-    /// caller that branches on the exit code, so blank text is a usage error
-    /// like empty stdin and an empty `--input` file.
-    #[error("Error: --text is empty.")]
-    TextEmpty,
     /// The `multi_turn` stdin payload is not valid JSON.
     #[error("Error: Invalid JSON: {0}")]
     InvalidJson(String),
@@ -94,7 +87,6 @@ impl ScanPromptInputError {
                 | Self::InvalidFormat(_)
                 | Self::MultiTurnTextConflict
                 | Self::StdinEmpty
-                | Self::TextEmpty
                 | Self::InvalidJson(_)
                 | Self::InvalidPayload
                 | Self::EmptyCurrentQuery
@@ -107,8 +99,8 @@ impl ScanPromptInputError {
 /// Everything a `scan-prompt` invocation needs before it can run.
 #[derive(Debug)]
 pub struct PromptScanPlan {
-    /// One request per input line or conversation payload; the batch is never
-    /// empty because every input source rejects an empty selection.
+    /// One request per input line or conversation payload; empty means
+    /// nothing to scan (a whitespace `--text`), which exits successfully.
     pub requests: Vec<DaemonRequest>,
     /// Diagnostic warnings printed on stderr before the first request.
     pub warnings: Vec<String>,
@@ -246,21 +238,26 @@ impl ScanPromptCommand {
     }
 
     /// Builds one request per single-turn input using the input priority:
-    /// `--text`, then `--input`, then stdin. A blank `--text` is rejected
-    /// rather than treated as "nothing to scan", so exit `0` always carries a
-    /// verdict, matching the empty-stdin and empty-file paths.
+    /// `--text` (blank means nothing to scan), then `--input`, then stdin.
     fn single_turn_requests(
         &self,
         mode: &str,
         source: Option<String>,
         model: Option<String>,
     ) -> Result<Vec<DaemonRequest>, ScanPromptInputError> {
-        if let Some(text) = self.text.as_deref() {
-            let text = text.trim();
-            if text.is_empty() {
-                return Err(ScanPromptInputError::TextEmpty);
-            }
+        if let Some(text) = self
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
             return Ok(vec![Self::request(text, mode, source, model, None, None)?]);
+        }
+        // An explicitly blank `--text` means "nothing to scan" and succeeds
+        // silently; falling through covers it because neither the
+        // file nor stdin path is consulted when `--text` was given.
+        if self.text.is_some() {
+            return Ok(Vec::new());
         }
         if let Some(path) = &self.input {
             let file = std::fs::read_to_string(path).map_err(|error| {
@@ -454,27 +451,12 @@ mod tests {
     }
 
     #[test]
-    fn a_blank_text_is_rejected_like_empty_stdin() {
-        // Exit 0 must always carry a verdict, and the empty stdin and empty
-        // file paths are usage errors, so a blank `--text` cannot succeed
-        // silently.
-        for text in ["", "   ", "\n\t "] {
-            let mut command = command();
-            command.text = Some(text.to_owned());
-            let error = command
-                .plan()
-                .expect_err("blank text must be a usage error");
-            assert!(matches!(error, ScanPromptInputError::TextEmpty));
-        }
-    }
-
-    #[test]
-    fn a_text_that_only_pads_real_content_is_scanned_trimmed() {
+    fn an_explicitly_blank_text_scans_nothing_successfully() {
         let mut command = command();
-        command.text = Some("  hello  ".to_owned());
-        let plan = command.plan().expect("padded text still scans");
-        assert_eq!(plan.requests.len(), 1);
-        assert_eq!(plan.requests[0].params["text"], "hello");
+        command.text = Some("   ".to_owned());
+        let plan = command.plan().expect("blank text is not an error");
+        assert!(plan.requests.is_empty());
+        assert!(plan.warnings.is_empty());
     }
 
     #[test]
